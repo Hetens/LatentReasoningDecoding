@@ -86,7 +86,7 @@ def main():
     trainer.train()
 
     # Save checkpoint
-    checkpoint_path = "model_checkpoint.pt"
+    checkpoint_path = "./saved_models/model_checkpoint.pt"
     trainer.save_model(checkpoint_path)
 
     # # Run inference loop
