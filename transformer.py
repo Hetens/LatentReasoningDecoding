@@ -54,6 +54,8 @@ class DemoTransformer(nn.Module):
                        If None, runs without caching (training mode).
             cache_position: Total sequence length including current tokens.
         """
+        # Original was simply: resid_pre = self.embed(tokens) + self.pos_embed(tokens)
+        # Now we double check if there is an offset and calculate the position embedding from there if needed save time
         pos_offset = (cache_position - tokens.size(1)) if cache_position is not None else 0
         resid_pre = self.embed(tokens) + self.pos_embed(tokens, offset=pos_offset)
         for i, block in enumerate(self.blocks):
