@@ -1,9 +1,9 @@
-from jaxtyping import Union
+from typing import Union
 import torch
 from torch import nn
 import torch.distributed as dist
 from torch.optim.optimizer import Optimizer, ParamsT
-from .common import trunc_normal_init_
+from common import trunc_normal_init_
 
 class CastedSparseEmbedding(nn.Module):
     def __init__(self, num_embeddings:int, embedding_dim:int,batch_size: int, init_std: float, cast_to:torch.dtype):

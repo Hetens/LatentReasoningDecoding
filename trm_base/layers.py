@@ -1,10 +1,10 @@
-from jaxtyping import Tuple
+from typing import Tuple
 import einops
 import torch 
 from torch import nn
 import torch.nn.functional as F
 from torch.nn.functional import scaled_dot_product_attention
-from .common import trunc_normal_init_
+from common import trunc_normal_init_
 
 CosSin = Tuple[torch.Tensor, torch.Tensor]
 
@@ -36,7 +36,7 @@ class CastedLinear(nn.Module):
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
         super().__init__()
         #truncated leCun normal initialization
-        self.weight = nn.Parameter(trunc_normal_init_(torch.empty(out_features, in_features)), std=1.0/(in_features**0.5))
+        self.weight = nn.Parameter(trunc_normal_init_(torch.empty(out_features, in_features), std=1.0/(in_features**0.5)))
 
         self.bias = None
         if bias:
@@ -44,7 +44,7 @@ class CastedLinear(nn.Module):
             self.bias = nn.Parameter(torch.zeros(out_features,))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return F.linear(x, weight=self.weight.to(x.dtype)) + (self.bias.to(x.dtype) if self.bias is not None else None)
+        return F.linear(x, self.weight.to(x.dtype), bias=self.bias.to(x.dtype) if self.bias is not None else None)
 
 class CastedEmbedding(nn.Module):
     def __init__(self, num_embeddings:int, embedding_dim:int, init_std:float, cast_to: torch.dtype):
@@ -52,7 +52,7 @@ class CastedEmbedding(nn.Module):
         self.cast_to = cast_to
 
         #truncated leCun normal initialization
-        self.embedding_weight = nn.Parameter(trunc_normal_init_(torch.empty(num_embeddings, embedding_dim)), std=init_std)
+        self.embedding_weight = nn.Parameter(trunc_normal_init_(torch.empty(num_embeddings, embedding_dim), std=init_std))
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         return F.embedding(input, self.embedding_weight.to(self.cast_to))
@@ -69,7 +69,7 @@ class RotaryEmbedding(nn.Module):
         self.cos_cached = nn.Buffer(emb.cos(), persistent=False)
         self.sin_cached = nn.Buffer(emb.sin(), persistent=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self) -> torch.Tensor:
         return self.cos_cached, self.sin_cached
 
 class Attention(nn.Module):

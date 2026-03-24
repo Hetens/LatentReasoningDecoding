@@ -1,4 +1,4 @@
-from jaxtyping import Any, Tuple, Dict, Sequence, Optional
+from typing import Any, Tuple, Dict, Sequence, Optional
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -42,46 +42,44 @@ class ACTLossHead(nn.Module):
         new_carry, outputs =self.model(**kwarg)
         labels = new_carry.current_data['labels']
 
+        logits = outputs["logits"]
+        mask = labels != IGNORE_LABEL_ID
+        loss_counts = mask.sum(-1)
+        loss_divisor = loss_counts.clamp_min(1).unsqueeze(-1)
+        is_correct = mask & (torch.argmax(logits, dim=-1) == labels)
+        seq_is_correct = is_correct.sum(-1) == loss_counts
+
+        # Must stay outside no_grad so backward() sees a grad_fn (upstream wraps this block — breaks PyTorch training).
+        lm_loss = (self.loss_fn(logits, labels, ignore_index=IGNORE_LABEL_ID, valid_mask=mask) / loss_divisor).sum()
+        q_halt_loss = F.binary_cross_entropy_with_logits(
+            outputs["q_halt_logits"], seq_is_correct.to(outputs["q_halt_logits"].dtype), reduction="sum"
+        )
+        q_continue_loss = torch.zeros((), device=logits.device, dtype=logits.dtype)
+        if "target_q_continue" in outputs:
+            q_continue_loss = F.binary_cross_entropy_with_logits(
+                outputs["q_continue_logits"], outputs["target_q_continue"], reduction="sum"
+            )
+        total_loss = lm_loss + 0.5 * (q_halt_loss + q_continue_loss)
+
         with torch.no_grad():
-            # Preds
-            outputs['preds'] = torch.argmax(outputs['logits'], dim=-1)
-
-            # correctness
-            mask = (labels != IGNORE_LABEL_ID)
-            loss_counts = mask.sum()
-            loss_divisor = loss_counts.clamp_min(1).unsqueeze(-1) #avoid division by zero
-
-            is_correct = mask & (torch.argmax(outputs['logits'], dim=-1) == labels)
-            seq_is_correct = is_correct.all(dim=-1) == loss_counts
-
-
-            #metrics(halted)
-            valid_metrics = new_carry.halted &(loss_counts > 0)
-            metrics = {
-                'accuracy': torch.where(valid_metrics, (is_correct.to(torch.float32).sum() / loss_divisor).sum(-1),0).sum(),
-                'exact_accuracy':  (valid_metrics &((outputs['q_halted_logits']>=0)==seq_is_correct)).sum(),
-                'q_halt_accuracy':(valid_metrics &((outputs['q_halted_logits']>=0)==seq_is_correct)).sum(),
-                'steps': torch.where(valid_metrics, new_carry.steps, 0).sum()
-
-            }
-
-            #loss
-            lm_loss = (self.loss_fn(outputs['logits'], labels, ignore_index=IGNORE_LABEL_ID, valid_mask=mask) / loss_divisor)
-
-            q_halt_loss = F.binary_cross_entropy_with_logits(outputs["q_halt_logits"], seq_is_correct.to(outputs["q_halt_logits"].dtype), reduction="sum")
-
-            
-            metrics.update({
+            outputs["preds"] = torch.argmax(logits, dim=-1)
+            valid_metrics = new_carry.halted & (loss_counts > 0)
+            metrics: Dict[str, torch.Tensor] = {
+                "count": valid_metrics.sum(),
+                "accuracy": torch.where(
+                    valid_metrics, (is_correct.to(torch.float32) / loss_divisor).sum(-1), 0
+                ).sum(),
+                "exact_accuracy": (valid_metrics & seq_is_correct).sum(),
+                "q_halt_accuracy": (
+                    valid_metrics & ((outputs["q_halt_logits"] >= 0) == seq_is_correct)
+                ).sum(),
+                "steps": torch.where(valid_metrics, new_carry.steps, 0).sum(),
                 "lm_loss": lm_loss.detach(),
                 "q_halt_loss": q_halt_loss.detach(),
-            })
-            # Q continue (bootstrapping target loss); Alexia: This fits Q-learning, but seems totally unecessary
-            q_continue_loss = 0
+            }
             if "target_q_continue" in outputs:
-                q_continue_loss = F.binary_cross_entropy_with_logits(outputs["q_continue_logits"], outputs["target_q_continue"], reduction="sum")
-
                 metrics["q_continue_loss"] = q_continue_loss.detach()
-            # Filter outputs for return
+
             detached_outputs = {k: outputs[k].detach() for k in return_keys if k in outputs}
 
-            return new_carry, lm_loss + 0.5 * (q_halt_loss + q_continue_loss), metrics, detached_outputs, new_carry.halted.all()
+        return new_carry, total_loss, metrics, detached_outputs, new_carry.halted.all()

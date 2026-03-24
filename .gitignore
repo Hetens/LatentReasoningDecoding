@@ -3,3 +3,6 @@ saved_models
 __pycache__
 datasets
 commands_to_manage.txt
+data
+wandb
+checkpoints
