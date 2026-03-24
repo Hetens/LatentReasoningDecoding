@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List
+from typing import List, Optional
 import numpy as np
 import pydantic
 
@@ -38,6 +38,54 @@ def _sample_batch(rng: np.random.Generator, group_order: np.ndarray, puzzle_indi
     return start_index, np.concatenate(batch), np.concatenate(batch_puzzle_indices)
 
 
+def _truncate_dataset_arrays(
+    d: dict,
+    max_examples: int,
+) -> None:
+    """Keep the first ``max_examples`` rows; rebuild puzzle/group index arrays to match."""
+    n = min(max_examples, len(d["inputs"]))
+    if n >= len(d["inputs"]):
+        return
+
+    pi = np.asarray(d["puzzle_indices"], dtype=np.int64)
+    pid = np.asarray(d["puzzle_identifiers"], dtype=np.int64)
+    gi = np.asarray(d["group_indices"], dtype=np.int64)
+
+    d["inputs"] = d["inputs"][:n]
+    d["labels"] = d["labels"][:n]
+
+    new_pi: List[int] = [0]
+    old_to_new: dict = {}
+    new_id = 0
+    for k in range(len(pi) - 1):
+        if pi[k] >= n:
+            break
+        end = min(int(pi[k + 1]), n)
+        if end > int(pi[k]):
+            new_pi.append(end)
+            old_to_new[int(k)] = new_id
+            new_id += 1
+
+    num_new_puzzles = len(new_pi) - 1
+    new_pid = [int(pid[k]) for k in sorted(old_to_new.keys())]
+
+    new_gi: List[int] = [0]
+    for g in range(len(gi) - 1):
+        lo, hi = int(gi[g]), int(gi[g + 1])
+        for k in range(lo, hi):
+            if k in old_to_new:
+                nid = old_to_new[k]
+                if nid > new_gi[-1]:
+                    new_gi.append(nid)
+                break
+    if new_gi[-1] != num_new_puzzles:
+        new_gi.append(num_new_puzzles)
+
+    d["puzzle_indices"] = np.asarray(new_pi, dtype=np.int32)
+    d["puzzle_identifiers"] = np.asarray(new_pid, dtype=np.int32)
+    d["group_indices"] = np.asarray(new_gi, dtype=np.int32)
+
+
 class PuzzleDatasetConfig(pydantic.BaseModel):
     seed: int
     dataset_paths: List[str]
@@ -46,6 +94,7 @@ class PuzzleDatasetConfig(pydantic.BaseModel):
     epochs_per_iter: int  # Batch X epochs in an iteration to reduce overhead.
     rank: int
     num_replicas: int
+    max_examples: Optional[int] = None  # First N rows per loaded set; None = no cap.
 
 class PuzzleDataset(IterableDataset):
     def __init__(self, config: PuzzleDatasetConfig, split: str = "train"):
@@ -110,6 +159,10 @@ class PuzzleDataset(IterableDataset):
         self._data = None
         self._iters = 0
 
+        # Apply max_examples before anyone reads ``metadata`` (pretrain uses it for total_steps / tqdm).
+        if self.config.max_examples is not None and self.config.max_examples > 0:
+            self._lazy_load_dataset()
+
     def _load_metadata(self, dataset_path) -> PuzzleDatasetMetadata:
         with open(os.path.join(dataset_path, self.split, "dataset.json"), "r") as f:
             return PuzzleDatasetMetadata(**json.load(f))
@@ -141,6 +194,27 @@ class PuzzleDataset(IterableDataset):
                     for field_name, mmap_mode in field_mmap_modes.items()
                 }
 
+        if self.config.max_examples is not None and self.config.max_examples > 0:
+            for d in self._data.values():
+                _truncate_dataset_arrays(d, self.config.max_examples)
+            self._refresh_metadata_from_loaded_data()
+
+    def _refresh_metadata_from_loaded_data(self) -> None:
+        total_puzzles = 0
+        total_groups = 0
+        total_example_rows = 0
+        for d in self._data.values():
+            total_example_rows += len(d["inputs"])
+            total_puzzles += len(d["puzzle_indices"]) - 1
+            total_groups += len(d["group_indices"]) - 1
+        mean_pe = (total_example_rows / total_puzzles) if total_puzzles else 0.0
+        self.metadata = self.metadata.model_copy(
+            update={
+                "total_puzzles": total_puzzles,
+                "total_groups": total_groups,
+                "mean_puzzle_examples": mean_pe,
+            }
+        )
 
     def _collate_batch(self, batch):
         # Convert dtype

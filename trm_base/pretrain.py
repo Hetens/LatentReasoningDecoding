@@ -78,6 +78,9 @@ class PretrainConfig(pydantic.BaseModel):
 
     #extras
     seed: int =0
+    # Cap rows loaded from disk (None = use full split). Train/test use separate limits.
+    max_train_samples: Optional[int] = None
+    max_test_samples: Optional[int] = None
     checkpoint_every_eval: bool = False
     eval_interval: Optional[int] = None
     min_eval_interval: Optional[int] = 0
@@ -161,6 +164,9 @@ def create_dataloader(config: PretrainConfig, split: str , rank:int, world_size:
         if test_set_mode and len(config.data_paths_test) > 0
         else config.data_paths
     )
+    max_examples = (
+        config.max_test_samples if test_set_mode else config.max_train_samples
+    )
     dataset = PuzzleDataset(PuzzleDatasetConfig(
         seed = config.seed,
         dataset_paths = dataset_paths,
@@ -169,6 +175,7 @@ def create_dataloader(config: PretrainConfig, split: str , rank:int, world_size:
         global_batch_size = global_batch_size,
         test_set_mode = test_set_mode,
         epochs_per_iter = epochs_per_iter,
+        max_examples = max_examples,
     ), split = split)
 
     dataloader = DataLoader(dataset, batch_size = None, num_workers = 1, prefetch_factor = 8, pin_memory = True, persistent_workers = True, **kwargs)

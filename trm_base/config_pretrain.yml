@@ -11,6 +11,10 @@ hydra:
 data_paths: ['data/sudoku-extreme-full']
 data_paths_test: ['data/sudoku-extreme-full']
 
+# Use only the first N example rows per split (omit or null for full data).
+max_train_samples: 10000
+max_test_samples: 2000
+
 evaluators:
   - name: arc@ARC
 
