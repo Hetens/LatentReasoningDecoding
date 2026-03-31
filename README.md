@@ -1,135 +1,133 @@
-A lightweight transformer language model implementation built from scratch using PyTorch. This project features a **3.3 million parameter** model trained on the TinyStories dataset.
+# TinyLLM — Spatial Reasoning in Tiny Recursive Models
 
-## Model Architecture
+This repository contains two transformer implementations trained on Sudoku puzzles, plus an **ablation study** to identify the architectural source of spatial reasoning in the Tiny Recursive Model (TRM).
 
-The DemoTransformer is a compact yet capable language model with the following specifications:
+## Repository Structure
 
-- **Parameters**: ~3.3 Million
-- **Model Dimension (d_model)**: 32
-- **Attention Heads**: 16
-- **Head Dimension (d_head)**: 2
-- **MLP Dimension**: 128 (4x d_model)
-- **Layers**: 4
-- **Context Length**: 128 tokens
-- **Vocabulary Size**: 50,257 (GPT-2 tokenizer)
+```
+TinyLLM/
+├── core/                        # Demo Transformer (GPT-2 style)
+│   ├── attention.py             #   Causal multi-head attention, KV-cache
+│   ├── config.py                #   Config & TransformerTrainingArgs
+│   ├── layers.py                #   Embed, PosEmbed (learned), LayerNorm, Unembed
+│   ├── mlp.py                   #   GELU feed-forward
+│   ├── sampler.py               #   Autoregressive generation
+│   ├── trainer.py               #   Training loop
+│   └── transformer.py           #   DemoTransformer model
+│
+├── trm_base/                    # Tiny Recursive Model (TRM / ACT v1)
+│   ├── arch/trm.yml             #   Architecture config (RoPE, hidden size, …)
+│   ├── trm.py                   #   TinyRecursiveReasoningModel_ACTV1
+│   ├── layers.py                #   CastedLinear, CastedEmbedding, RoPE, Attention, SwiGLU
+│   ├── losses.py                #   ACTLossHead, stablemax cross-entropy
+│   ├── common.py                #   Truncated-normal init
+│   ├── sparse_embedding.py      #   CastedSparseEmbedding + SignSGD optimizer
+│   ├── pretrain.py              #   Training loop (single-GPU / DDP)
+│   ├── puzzle_dataset.py        #   PuzzleDataset (iterable, group-based batching)
+│   ├── build_sdku_data.py       #   Builds on-disk Sudoku data from HuggingFace
+│   ├── metadata.py              #   Dataset metadata types
+│   ├── functions.py             #   Dynamic model-class loader
+│   └── config_pretrain.yml      #   Default pretrain hyperparameters
+│
+├── sudoku/                      # Sudoku task (data + tokenizer for demo transformer)
+│   ├── main_sudoku.py           #   Train DemoTransformer on Sudoku
+│   └── sudoku_tokenizer.py      #   11-token Sudoku tokenizer
+│
+├── experiments/ablation/        # ** Ablation study — RoPE vs CastedLinear **
+│   ├── configs/
+│   │   ├── arch/trm.yml         #   Base TRM arch (copied from trm_base)
+│   │   ├── baseline_rope_casted.yml
+│   │   ├── ablation_learned_casted.yml
+│   │   ├── ablation_rope_standard.yml
+│   │   └── ablation_learned_standard.yml
+│   └── run_ablation.py          #   Experiment runner
+│
+├── scripts/                     # Entry-point scripts
+│   ├── train_demo.py            #   Train DemoTransformer on TinyStories
+│   └── train_sudoku.py          #   Train DemoTransformer on Sudoku
+│
+├── docs/                        # Documentation & notes
+├── archive/                     # Legacy / old code
+├── data/                        # On-disk datasets (gitignored)
+├── checkpoints/                 # Saved model weights (gitignored)
+└── requirements.txt
+```
 
-## Architecture Components
+## Key Architectural Differences
 
-### Core Modules
+| Aspect | Demo Transformer (`core/`) | TRM (`trm_base/`) |
+|---|---|---|
+| **Positional encoding** | Learned absolute (`PosEmbed`) | **RoPE** (default) or learned |
+| **Linear layers** | Standard `nn.Parameter` matmuls | **CastedLinear** (dtype-casting + trunc-normal init) |
+| **Embeddings** | Standard `nn.Parameter` | **CastedEmbedding** (dtype-casting) |
+| **Attention** | Causal, per-head W_Q/W_K/W_V/W_O | Non-causal, fused QKV, `scaled_dot_product_attention` |
+| **FFN** | 2-layer GELU MLP | **SwiGLU** |
+| **Normalization** | Pre-norm LayerNorm | Post-norm **RMS norm** (no learned params) |
+| **Recursion** | Single forward pass | **H/L cycles** with carry + **ACT halting** |
+| **Task** | Autoregressive next-token | Non-autoregressive (predict all 81 cells in parallel) |
 
-- **`transformer.py`**: Main transformer model and transformer blocks
-- **`attention.py`**: Multi-head self-attention with causal masking
-- **`mlp.py`**: Feed-forward network with GELU activation
-- **`layers.py`**: Embedding, positional embedding, unembedding, and layer normalization
-- **`config.py`**: Model and training configuration
-- **`trainer.py`**: Training loop, evaluation, and checkpointing
-- **`sampler.py`**: Text generation with various sampling strategies
-- **`main.py`**: Entry point for training and inference
+## Ablation Study: Source of Spatial Reasoning
+
+The TRM achieves spatial reasoning on Sudoku. Two candidate mechanisms are:
+
+1. **RoPE** — Rotary Position Embeddings inject relative-position information directly into Q/K dot products, potentially encoding spatial structure of the 9×9 grid.
+2. **CastedLinear** — dtype-casting linear layers with truncated-normal initialization may provide better gradient flow or numerical stability that aids spatial learning.
+
+### Experiment Matrix
+
+| Experiment | Positional Encoding | Linear Layer | What it tests |
+|---|---|---|---|
+| `baseline_rope_casted` | RoPE | CastedLinear | Control (default TRM) |
+| `ablation_learned_casted` | **Learned** | CastedLinear | Does removing RoPE hurt spatial reasoning? |
+| `ablation_rope_standard` | RoPE | **nn.Linear** | Does removing Casted layers hurt spatial reasoning? |
+| `ablation_learned_standard` | **Learned** | **nn.Linear** | Does removing both degrade further? |
+
+### Running the Ablation
+
+```bash
+# Run all four experiments sequentially
+python experiments/ablation/run_ablation.py
+
+# Run a single experiment
+python experiments/ablation/run_ablation.py --experiment ablation_learned_casted
+
+# Dry-run (print commands only)
+python experiments/ablation/run_ablation.py --dry-run
+```
+
+Results are logged to the W&B project `ablation-spatial-reasoning`. Compare `exact_accuracy` across runs to determine which component drives spatial reasoning.
+
+### Interpreting Results
+
+- If **`ablation_learned_casted`** degrades significantly vs baseline → **RoPE is key**
+- If **`ablation_rope_standard`** degrades significantly vs baseline → **CastedLinear is key**
+- If **`ablation_learned_standard`** degrades more than either single ablation → **both contribute**
+- If neither single ablation degrades much → the mechanism is elsewhere (e.g., SwiGLU, RMS norm, ACT recursion)
 
 ## Getting Started
 
 ### Installation
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd TinyLLM
-```
-
-2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-### Training
-
-Train the model from scratch:
+### Train the Demo Transformer (Sudoku)
 
 ```bash
-python main.py
+python scripts/train_sudoku.py
 ```
 
-The training script will:
-- Load the TinyStories dataset
-- Train for 10 epochs with 500 steps per epoch
-- Save checkpoints to `./saved_models/`
-- Display sample generations after each epoch
-
-### Inference
-
-Run inference with a saved checkpoint:
+### Train the TRM (Sudoku)
 
 ```bash
-python main.py --inference ./saved_models/model_checkpoint.pt
+# First build the on-disk dataset
+python trm_base/build_sdku_data.py
+
+# Then train
+python trm_base/pretrain.py
 ```
-
-This will start an interactive prompt where you can generate text.
-
-## Features
-
-### Sampling Strategies
-
-The model supports multiple text generation strategies:
-
-- **Greedy Search**: Always pick the most likely token
-- **Temperature Sampling**: Control randomness (higher = more random)
-- **Top-k Sampling**: Sample from the k most likely tokens
-- **Top-p (Nucleus) Sampling**: Sample from tokens with cumulative probability p
-- **Frequency Penalty**: Reduce repetition by penalizing frequent tokens
-
-Example usage:
-```python
-from sampler import TransformerSampler
-
-sampler = TransformerSampler(model, tokenizer)
-text = sampler.sample(
-    prompt="Once upon a time",
-    max_tokens_generated=100,
-    temperature=0.8,
-    top_p=0.9
-)
-```
-
-### Training Configuration
-
-Default training parameters (configurable in `config.py`):
-
-- **Batch Size**: 16
-- **Learning Rate**: 1e-3
-- **Weight Decay**: 1e-2
-- **Optimizer**: AdamW
-- **Epochs**: 10
-- **Max Steps per Epoch**: 500
-
-## Technical Details
-
-### Attention Mechanism
-
-The model uses multi-head self-attention with:
-- Causal masking to prevent attending to future tokens
-- Scaled dot-product attention
-- Separate Q, K, V projections for each head
-
-### Training
-
-- **Dataset**: TinyStories by Roneneldan
-- **Loss**: Cross-entropy (negative log-likelihood)
-- **Evaluation**: Token-level accuracy on held-out test set
-- **Hardware**: CUDA-enabled GPU (falls back to CPU if unavailable)
-
-## Performance
-
-The model is evaluated on:
-- **Training Loss**: Cross-entropy loss on training batches
-- **Test Accuracy**: Token prediction accuracy on test set
-- **Sample Quality**: Qualitative evaluation of generated text
 
 ## License
 
 This project is open source and available under the MIT License.
-
-## Acknowledgments
-
-- Built with inspiration from the TransformerLens library
-- Trained on the TinyStories dataset
-- Uses GPT-2 tokenizer from HuggingFace Transformers

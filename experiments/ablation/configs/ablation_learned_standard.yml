@@ -1,0 +1,50 @@
+# Ablation Experiment: LEARNED POS + StandardLinear (no Casted layers)
+# Swaps BOTH RoPE → learned AND CastedLinear → standard nn.Linear.
+# If spatial reasoning degrades most here, both contribute.
+# If it matches one of the single-ablation runs, that factor dominates.
+
+defaults:
+  - arch: trm
+  - _self_
+
+hydra:
+  output_subdir: null
+
+arch:
+  pos_encodings: learned
+  use_casted_layers: false
+
+data_paths: ['data/sudoku-extreme-full']
+data_paths_test: ['data/sudoku-extreme-full']
+
+max_train_samples: 1000
+max_test_samples: 200
+
+evaluators: []
+
+global_batch_size: 16
+
+epochs: 100
+eval_interval: 10
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.1
+puzzle_emb_weight_decay: 0.1
+
+puzzle_emb_lr: 1e-2
+
+seed: 42
+min_eval_interval: 0
+
+ema: False
+ema_rate: 0.999
+freeze_weights: False
+
+project_name: ablation-spatial-reasoning
+run_name: ablation-learned-standard

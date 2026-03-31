@@ -1,4 +1,5 @@
-from typing import Tuple
+from typing import Tuple, Type
+import math
 import einops
 import torch 
 from torch import nn
@@ -10,6 +11,39 @@ CosSin = Tuple[torch.Tensor, torch.Tensor]
 
 def _find_multiple(a, b):
     return (-(a//-b))*b
+
+
+# ---------------------------------------------------------------------------
+# Standard (non-casting) layer alternatives — used in ablation experiments
+# ---------------------------------------------------------------------------
+
+class StandardLinear(nn.Linear):
+    """Drop-in replacement for CastedLinear using standard PyTorch nn.Linear
+    (Kaiming-uniform init, no explicit dtype casting in forward)."""
+    pass
+
+
+class StandardEmbedding(nn.Module):
+    """Drop-in replacement for CastedEmbedding that keeps the same constructor
+    signature and exposes ``.embedding_weight`` so the rest of the model code
+    doesn't need changes. Uses normal init (no truncated-normal) and no dtype
+    casting in forward."""
+
+    def __init__(self, num_embeddings: int, embedding_dim: int, init_std: float, cast_to: torch.dtype):
+        super().__init__()
+        self.embedding_weight = nn.Parameter(torch.empty(num_embeddings, embedding_dim))
+        nn.init.normal_(self.embedding_weight, std=max(init_std, 1e-4))
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return F.embedding(input, self.embedding_weight)
+
+
+def get_linear_class(use_casted: bool) -> Type[nn.Module]:
+    return CastedLinear if use_casted else StandardLinear
+
+
+def get_embedding_class(use_casted: bool) -> Type[nn.Module]:
+    return CastedEmbedding if use_casted else StandardEmbedding
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Rotates half the hidden dims of the input."""
@@ -73,8 +107,10 @@ class RotaryEmbedding(nn.Module):
         return self.cos_cached, self.sin_cached
 
 class Attention(nn.Module):
-    def __init__(self, hidden_size: int, head_dim: int, num_heads: int, num_key_value_heads: int, causal: bool = False):
+    def __init__(self, hidden_size: int, head_dim: int, num_heads: int, num_key_value_heads: int, causal: bool = False, linear_cls: Type[nn.Module] = None):
         super().__init__()
+        if linear_cls is None:
+            linear_cls = CastedLinear
         
         self.hidden_size = hidden_size
         self.head_dim = head_dim
@@ -83,8 +119,8 @@ class Attention(nn.Module):
         self.num_key_value_heads = num_key_value_heads
         self.causal = causal
 
-        self.qkv_proj = CastedLinear(self.hidden_size, (self.num_heads + 2 * self.num_key_value_heads) * self.head_dim, bias=False)
-        self.o_proj = CastedLinear(self.output_size, self.hidden_size, bias=False)
+        self.qkv_proj = linear_cls(self.hidden_size, (self.num_heads + 2 * self.num_key_value_heads) * self.head_dim, bias=False)
+        self.o_proj = linear_cls(self.output_size, self.hidden_size, bias=False)
 
     def forward(self, cos_sin: CosSin, hidden_states: torch.Tensor) -> torch.Tensor:
         batch_size, seq_len, _ = hidden_states.shape
@@ -114,11 +150,13 @@ class Attention(nn.Module):
     
 
 class LinearSwish(nn.Module):
-    def __init__(self, hidden_size: int, reverse:bool = False):
+    def __init__(self, hidden_size: int, reverse:bool = False, linear_cls: Type[nn.Module] = None):
         super().__init__()
+        if linear_cls is None:
+            linear_cls = CastedLinear
 
         self.reverse = reverse
-        self.linear = CastedLinear(hidden_size, hidden_size, bias=False)
+        self.linear = linear_cls(hidden_size, hidden_size, bias=False)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -128,12 +166,14 @@ class LinearSwish(nn.Module):
             return self.linear(F.silu(x))
 
 class SwiGLU(nn.Module):
-    def __init__(self, hidden_size: int, expansion:float):
+    def __init__(self, hidden_size: int, expansion:float, linear_cls: Type[nn.Module] = None):
         super().__init__()
+        if linear_cls is None:
+            linear_cls = CastedLinear
         inter = _find_multiple(round(expansion * hidden_size * 2 / 3), 256)
 
-        self.gate_up_proj = CastedLinear(hidden_size, inter * 2, bias=False)
-        self.down_proj = CastedLinear(inter, hidden_size, bias=False)
+        self.gate_up_proj = linear_cls(hidden_size, inter * 2, bias=False)
+        self.down_proj = linear_cls(inter, hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         gate, up = self.gate_up_proj(x).chunk(2, dim=-1)

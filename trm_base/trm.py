@@ -8,7 +8,10 @@ from pydantic import BaseModel
 import random
 from torch.nn import functional as F
 from sparse_embedding import CastedSparseEmbedding
-from layers import CastedLinear, CastedEmbedding, RotaryEmbedding, Attention, SwiGLU, rms_norm, CosSin
+from layers import (
+    CastedLinear, CastedEmbedding, RotaryEmbedding, Attention, SwiGLU,
+    rms_norm, CosSin, get_linear_class, get_embedding_class,
+)
 from losses import ACTLossHead
 from common import trunc_normal_init_
 
@@ -55,6 +58,7 @@ class TinyRecursiveReasoningModel_ACTV1Config(BaseModel):
     halt_exploration_prob: float
 
     forward_dtype:str = "bfloat16"
+    use_casted_layers: bool = True
 
     #Alexia?? added
     mlp_t:bool = False
@@ -66,25 +70,28 @@ class TinyRecursiveReasoningModel_ACTV1Block(nn.Module):
         super().__init__()
 
         self.config = config
+        linear_cls = get_linear_class(config.use_casted_layers)
+
         if self.config.mlp_t:
             if self.config.puzzle_emb_ndim == 0:
                 self.puzzle_emb_len = 0
             else:
                 self.puzzle_emb_len = -(self.config.puzzle_emb_ndim // -self.config.hidden_size) if self.config.puzzle_emb_len == 0 else self.config.puzzle_emb_len
-            self.mlp_t = SwiGLU(hidden_size=self.config.seq_len + self.puzzle_emb_len, expansion=config.expansion)
+            self.mlp_t = SwiGLU(hidden_size=self.config.seq_len + self.puzzle_emb_len, expansion=config.expansion, linear_cls=linear_cls)
 
         else:
             self.self_attn = Attention(
                 hidden_size = config.hidden_size,
                 head_dim = config.hidden_size // config.num_heads, 
                 num_heads = config.num_heads,
-                #what is the point of this?
                 num_key_value_heads = config.num_heads,
-                causal = False)
+                causal = False,
+                linear_cls = linear_cls)
         
         self.mlp = SwiGLU(
             hidden_size = config.hidden_size,
-            expansion = config.expansion
+            expansion = config.expansion,
+            linear_cls = linear_cls,
             )
 
         self.norm_eps = config.rms_norm_eps
@@ -127,16 +134,19 @@ class TinyRecursiveReasoningModel_ACTV1_Inner(nn.Module):
         self.config = config
         self.forward_dtype = getattr(torch, config.forward_dtype)
 
+        linear_cls = get_linear_class(config.use_casted_layers)
+        embedding_cls = get_embedding_class(config.use_casted_layers)
+
         #I/O
 
         self.embed_scale = math.sqrt(self.config.hidden_size)
         embed_init_std = 1.0/self.embed_scale
 
-        self.embed_tokens = CastedEmbedding(self.config.vocab_size, self.config.hidden_size, init_std = embed_init_std, cast_to = self.forward_dtype)
+        self.embed_tokens = embedding_cls(self.config.vocab_size, self.config.hidden_size, init_std = embed_init_std, cast_to = self.forward_dtype)
 
-        self.lm_head = CastedLinear(self.config.hidden_size, self.config.vocab_size, bias = False)
+        self.lm_head = linear_cls(self.config.hidden_size, self.config.vocab_size, bias = False)
 
-        self.q_head = CastedLinear(self.config.hidden_size, 2, bias = True)
+        self.q_head = linear_cls(self.config.hidden_size, 2, bias = True)
 
         # No puzzle embedding table => no prefix slots (Samsung configs use puzzle_emb_len=0 when puzzle_emb_ndim=0).
         if self.config.puzzle_emb_ndim == 0:
@@ -153,7 +163,7 @@ class TinyRecursiveReasoningModel_ACTV1_Inner(nn.Module):
             self.rotary_emb = RotaryEmbedding(dim = self.config.hidden_size// self.config.num_heads, max_position_embeddings = self.config.seq_len + self.puzzle_emb_len, base = self.config.rope_theta)
 
         elif self.config.pos_encodings == "learned":
-            self.embed_pos = CastedEmbedding(self.config.seq_len + self.puzzle_emb_len,
+            self.embed_pos = embedding_cls(self.config.seq_len + self.puzzle_emb_len,
             self.config.hidden_size, init_std = embed_init_std, cast_to = self.forward_dtype)
         else:
             pass
