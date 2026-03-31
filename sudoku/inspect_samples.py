@@ -189,8 +189,8 @@ def main():
         print("Create 'datasets' and add sudoku-test-data.npy and zebra-test-data.pkl")
         return
 
-    num_sudoku = 2
-    num_zebra = 2
+    num_sudoku = 1
+    num_zebra = 1
     show_sudoku_samples(data_dir, num_samples=num_sudoku)
     show_zebra_samples(data_dir, num_samples=num_zebra)
     print("Done.")

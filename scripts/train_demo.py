@@ -1,4 +1,7 @@
 """Main entry point for training and running inference with the DemoTransformer."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
 import torch as t
 import datasets
 from torch.utils.data import DataLoader

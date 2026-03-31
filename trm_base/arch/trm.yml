@@ -1,0 +1,29 @@
+# Composed as `arch` when using defaults: [[arch: trm]] in the main pretrain config.
+# `load_model_class` imports `models.<module>` — add a `models` package or adjust `name` / `load_model_class` to match your layout.
+name: trm@TinyRecursiveReasoningModel_ACTV1
+loss:
+  name: losses@ACTLossHead
+  loss_type: stablemax_cross_entropy
+
+H_cycles: 2
+L_cycles: 2
+H_layers: 2
+L_layers: 2
+hidden_size: 512
+expansion: 4.0
+num_heads: 8
+num_key_value_heads: 8
+pos_encodings: rope
+
+# Sudoku-only: no sparse puzzle table — keep len 0 so seq length matches token embeddings (81).
+puzzle_emb_ndim: 0
+puzzle_emb_len: 0
+
+halt_max_steps: 16
+halt_exploration_prob: 0.05
+
+mlp_t: false
+no_ACT_continue: true
+forward_dtype: float16
+rms_norm_eps: 1.0e-5
+rope_theta: 10000.0
