@@ -12,8 +12,8 @@ data_paths: ['data/sudoku-extreme-full']
 data_paths_test: ['data/sudoku-extreme-full']
 
 # Use only the first N example rows per split (omit or null for full data).
-max_train_samples: 100000
-max_test_samples: 20000
+max_train_samples: 10000
+max_test_samples: 2000
 
 evaluators:
   - name: arc@ARC
@@ -21,8 +21,8 @@ evaluators:
 # Hyperparams - Training
 global_batch_size: 16
 
-epochs: 100
-eval_interval: 10
+epochs: 10000
+eval_interval: 100
 checkpoint_every_eval: True
 
 lr: 1e-4

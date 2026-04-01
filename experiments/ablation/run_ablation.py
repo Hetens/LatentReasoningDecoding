@@ -82,6 +82,9 @@ def main():
         existing = env.get("PYTHONPATH", "")
         trm_base_dir = os.path.join(REPO_ROOT, "trm_base")
         env["PYTHONPATH"] = trm_base_dir + (os.pathsep + existing if existing else "")
+        # Disable torch.compile — Triton requires CUDA capability >= 7.0
+        # but older GPUs (e.g. GTX 1050, capability 6.1) don't support it.
+        env["DISABLE_COMPILE"] = "1"
 
         result = subprocess.run(cmd, cwd=REPO_ROOT, env=env)
         if result.returncode != 0:
