@@ -18,7 +18,7 @@ max_test_samples: 20000
 evaluators: []
 
 # Hyperparams - Training
-global_batch_size: 16
+global_batch_size: 128
 
 epochs: 100
 eval_interval: 10
