@@ -16,7 +16,7 @@
 #SBATCH --mem=48G
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus=1
-#SBATCH --constraint=a100
+#SBATCH --constraint=v100
 #SBATCH --output=logs/train_trm_%j.out
 #SBATCH --error=logs/train_trm_%j.err
 
