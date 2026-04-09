@@ -32,14 +32,15 @@ lr_warmup_steps: 2000
 
 beta1: 0.9
 beta2: 0.95
-weight_decay: 1.0
-puzzle_emb_weight_decay: 1.0
+weight_decay: 0.1
+puzzle_emb_weight_decay: 0.1
 
 puzzle_emb_lr: 1e-4
 
 seed: 0
 min_eval_interval: 0
 
-ema: True
+ema: False
 ema_rate: 0.999
 freeze_weights: False
+
