@@ -24,6 +24,6 @@ halt_exploration_prob: 0.05
 
 mlp_t: false
 no_ACT_continue: true
-forward_dtype: float16
+forward_dtype: bfloat16
 rms_norm_eps: 1.0e-5
 rope_theta: 10000.0
