@@ -1,0 +1,28 @@
+# Paper architecture WITHOUT RoPE — ablation to test positional encoding impact.
+# Everything else identical to trm_base/arch/trm_paper.yml
+name: trm@TinyRecursiveReasoningModel_ACTV1
+loss:
+  name: losses@ACTLossHead
+  loss_type: stablemax_cross_entropy
+
+H_cycles: 3
+L_cycles: 6
+H_layers: 2
+L_layers: 2
+hidden_size: 512
+expansion: 4.0
+num_heads: 8
+num_key_value_heads: 8
+pos_encodings: none
+
+puzzle_emb_ndim: 0
+puzzle_emb_len: 0
+
+halt_max_steps: 16
+halt_exploration_prob: 0.05
+
+mlp_t: false
+no_ACT_continue: true
+forward_dtype: bfloat16
+rms_norm_eps: 1.0e-5
+rope_theta: 10000.0

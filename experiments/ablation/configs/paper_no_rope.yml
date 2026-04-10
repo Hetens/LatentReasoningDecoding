@@ -1,0 +1,45 @@
+# Ablation: Paper hyperparams WITHOUT RoPE positional encodings.
+# Compare against config_pretrain_paper.yml (which uses RoPE) to measure
+# the contribution of RoPE to Sudoku reasoning accuracy.
+
+defaults:
+  - arch: trm_paper_no_rope
+  - _self_
+
+hydra:
+  output_subdir: null
+
+data_paths: ['data/sudoku-extreme-1k-aug-1000']
+data_paths_test: ['data/sudoku-extreme-1k-aug-1000']
+
+max_train_samples: null
+max_test_samples: null
+
+evaluators: []
+
+global_batch_size: 768
+
+epochs: 50000
+eval_interval: 5000
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 0.1
+puzzle_emb_weight_decay: 0.1
+
+puzzle_emb_lr: 1e-4
+
+seed: 0
+min_eval_interval: 0
+
+ema: False
+ema_rate: 0.999
+freeze_weights: False
+
+project_name: ablation-rope-paper-scale
+run_name: paper-no-rope
