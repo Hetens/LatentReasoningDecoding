@@ -1,0 +1,207 @@
+\documentclass{article}
+
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading compsci602-project
+
+
+
+% This template is derived from the NeurIPS 2024 paper submission template.
+\usepackage[final]{compsci602-project}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{amsmath}        % math environments
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+\usepackage{comment}        % multi-line comments
+\usepackage{enumitem}       % custom list formatting
+\usepackage{float}          % table placement
+
+
+\title{COMPSCI 602 \\ Project Report 5}
+
+
+\author{%
+  Hetansh Shah\\
+  College of Information and Computer Science\\
+  University of Massachusetts\\
+  Amherst, MA 01003 \\
+  \texttt{hetanshshah@umass.edu} \\
+}
+
+
+\begin{document}
+
+\maketitle
+
+\textbf{Project Title:} What Does the Latent State Learn? Interpreting Recursive Constraint Solving in the Tiny Recursive Model~\cite{jolicoeur2025}
+
+\smallskip
+\noindent\textit{Context:} In earlier project reports, I established the system, task, and phenomena (Report~2), ran a preliminary $2 \times 2$ ablation on positional encoding and linear layer type (Report~3), and narrowed the research agenda to one core phenomenon with falsifiable hypotheses (Report~4).  This report commits to \textbf{one} research question, specifies the evidence to be collected, details data collection and units, and outlines analysis techniques.
+
+\section{Research Questions and Hypotheses}
+
+Report~3 showed that removing RoPE positional embeddings from TRM drops test accuracy by around 6 percentage points relative to the baseline in a short-scale ablation.  A separate full-scale training run without RoPE (Section~\ref{sec:empirical}) reaches \textbf{0\%} accuracy under the paper's complete training recipe, confirming that RoPE is a necessary condition for learning.  All probing and representational comparison (CKA) will therefore use converged \textbf{RoPE} checkpoints; the no-RoPE run serves only to bound what is worth comparing.
+
+\begin{quote}
+\textbf{Research question:} \textit{Does TRM's latent vector $z$ encode Sudoku candidate-set structure for each cell, and does the quality of that encoding improve across inner refinement steps $i = 1, \ldots, n$?}
+\end{quote}
+
+\noindent A \textbf{candidate set} for a cell is the set of digits $\{1,\ldots,9\}$ that remain legally possible given the current puzzle state (row, column, and $3 \times 3$ box uniqueness).  Ground-truth candidate sets are computed offline by a classical constraint-propagation solver on the same puzzles the model sees at inference.
+
+\paragraph{Hypotheses.}  Three competing hypotheses define what success and failure look like.
+
+\begin{description}[leftmargin=2em, style=nextline]
+    \item[\textbf{H1 (Progressive linear encoding):}]  A linear probe trained on $z$ predicts the candidate set above chance, and mean probe accuracy increases across inner refinement steps $i=1$ to $i=n$.  Interpretation: recursion progressively builds an interpretable spatial representation, analogous to the emergent board-state structure found in OthelloGPT~\cite{nanda2023linear}.
+
+    \textit{Invalidated if:} Linear probe accuracy is indistinguishable from chance at all $(T,i)$, or does not trend upward with $i$.
+
+    \item[\textbf{H2 (Non-linear encoding):}]  Linear probes fail (near-chance), but a small two-layer MLP probe achieves above-chance accuracy at some $(T,i)$.  Interpretation: spatial structure lives in $z$ in a geometry that is not linearly accessible, unlike the simpler world models found in smaller sequence models~\cite{li2023emergent}.
+
+    \textit{Proven wrong if:} Linear probes already match H1, or even the MLP probe fails everywhere.
+
+    \item[\textbf{H3 (No interpretable candidate encoding):}]  Neither probe family recovers candidate-set information above chance at any $(T,i)$.  TRM would then be solving Sudoku through a mechanism that does not correspond to classical constraint bookkeeping in $z$ (information may live primarily in $y$, in the MLP-Mixer routing, or spread non-locally across cells).
+
+    \textit{Invalidated if:} Any probe family exceeds chance after multiple-comparison correction.
+\end{description}
+
+
+\section{Type of Empirical Analysis}
+\label{sec:empirical}
+
+The primary source of evidence is a \textbf{controlled experiment} on a trained TRM checkpoint: weights are frozen, forward passes are run on held-out puzzles, $z$ is recorded at each recursion stage, and supervised probes are fit on those frozen activations.
+
+\paragraph{RoPE necessity (full-scale training).}  A controlled training experiment already establishes that RoPE is not optional.  I trained \texttt{trm\_paper\_no\_rope} under the full paper recipe: dataset \texttt{sudoku-extreme-1k-aug-1000}, all training and test samples used (\texttt{max\_train\_samples: null}), \texttt{global\_batch\_size} $=768$, 50{,}000 epochs, \texttt{eval\_interval} $=5{,}000$, learning rate $10^{-4}$, puzzle embedding learning rate $10^{-4}$, weight decay $0.1$, seed $0$ (W\&B project \texttt{ablation-rope-paper-scale}, run \texttt{paper-no-rope}).  The model achieved \textbf{0\%} accuracy; the matched RoPE configuration learns successfully.  RoPE is therefore required to cross the threshold where any representation learning begins.  This does not characterize $z$, which is why probing remains the main question.
+
+\paragraph{Centered Kernel Alignment (CKA).}  To compare the \textit{geometry} of latent states across conditions (e.g., RoPE vs.\ learned embeddings at small scale, where both models still train), I will compute \textbf{linear CKA}~\cite{kornblith2019similarity}.  Let $\mathbf{X}, \mathbf{Y} \in \mathbb{R}^{n \times d}$ be column-centered activation matrices (same $n$ puzzle-cell pairs, different models or recursion indices).  Linear CKA is:
+\begin{equation}
+\label{eq:cka}
+\mathrm{CKA}(\mathbf{X}, \mathbf{Y}) \;=\; \frac{\bigl\| \mathbf{Y}^{\top} \mathbf{X} \bigr\|_{F}^{2}}{\bigl\| \mathbf{X}^{\top} \mathbf{X} \bigr\|_{F} \, \bigl\| \mathbf{Y}^{\top} \mathbf{Y} \bigr\|_{F}} \;\in\; [0,1]\text{,}
+\end{equation}
+where $\|\cdot\|_{F}$ is the Frobenius norm.  CKA $=1$ means the two representations are related by an invertible linear map; CKA $=0$ means they are geometrically unrelated.  $\mathbf{X}$ and $\mathbf{Y}$ are formed by stacking $z_{T,i,c}$ vectors over the same ordered list of (puzzle, cell) pairs from two checkpoints at fixed $(T,i)$.
+
+\paragraph{Backtracking comparison (secondary).}  Each test puzzle will be labelled by a classical depth-first solver: $b=1$ if the solver had to backtrack to find the solution, $b=0$ if forward constraint propagation alone was sufficient.  Probe accuracy will be reported separately for hard ($b=1$) and easy ($b=0$) puzzles.  This is an observational comparison, not a randomized manipulation; it checks whether candidate-set encoding differs on puzzles that require non-monotone search.
+
+\paragraph{Causal follow-up (limited).}  High probe accuracy does not guarantee the model actually uses the encoded information~\cite{belinkov2022probing, meng2022locating}.  For the best-performing $(T,i)$, I will run a small number of \textbf{activation patching} interventions: replace $z$ with activations from a different puzzle and measure whether the model's predicted cell logits shift in the direction of the patched puzzle's constraints.  A consistent shift is evidence of causal necessity.
+
+\paragraph{Mathematical setup for the linear probe.}  Fix recursion index $(T,i)$ and cell $c$.  Let $h = z_{T,i,c} \in \mathbb{R}^{d}$.  Each digit $k \in \{1,\ldots,9\}$ is treated as an independent yes/no question is digit $k$ still a legal candidate for this cell? So the probe is \textbf{nine separate binary classifiers sharing the same input}, one per digit:
+\begin{equation}
+\label{eq:probe-logits}
+\ell_{k}(h) \;=\; w_{k}^{\top} h + b_{k}\text{,} \qquad k = 1,\ldots,9\text{.}
+\end{equation}
+Training minimizes the sum of binary cross-entropies (multi-label objective):
+\begin{equation}
+\label{eq:bce}
+\mathcal{L} \;=\; \sum_{k=1}^{9} \Bigl[ -\, y_{c,k} \log \sigma\!\bigl(\ell_{k}(h)\bigr) - (1 - y_{c,k}) \log \bigl(1 - \sigma\!\bigl(\ell_{k}(h)\bigr)\bigr) \Bigr]\text{,}
+\end{equation}
+where $y_{c,k} \in \{0,1\}$ indicates whether digit $k$ is in the classical candidate set $S_c$, and $\sigma$ is the logistic function.  There is no softmax coupling across digits because multiple digits can simultaneously be in $S_c$.  A softmax would force exactly one winner per cell, which is wrong at every intermediate recursion step.
+
+\noindent The \textbf{nonlinear probe} (H2) replaces $\ell_k(h)$ with a two-layer MLP applied to $h$, with a $9$-dimensional sigmoid output and the same loss~\eqref{eq:bce}.  The MLP uses GELU activations and a fixed hidden width (e.g., $128$); SwiGLU is deliberately avoided because it is also used inside TRM itself, and using the same nonlinearity would make it harder to distinguish ``the probe learned a spatial feature'' from ``the probe is approximating TRM's own computation''.  Probe weights are fit only on probe-training puzzles; TRM weights remain frozen throughout.
+
+
+\section{Data collection}
+
+\subsection{System and implementation}
+
+Training and forward passes use the Tiny Recursive Model codebase.\footnote{\url{https://github.com/Hetens/LatentReasoningDecoding}}  The reference architecture and hyperparameters follow the original TRM Sudoku recipe~\cite{jolicoeur2025}.\footnote{\url{https://github.com/SamsungSAILMontreal/TinyRecursiveModels}}  The \textbf{baseline} configuration is RoPE with CastedLinear layers, $H_\text{cycles} = 3$, $L_\text{cycles} = 4$, $L_\text{layers} = 2$, matching the paper's reported optimum for Sudoku unless resource limits require a documented reduction.
+
+\subsection{Task and environment}
+
+Sudoku-Extreme instances (81 cells, digits 1--9), loaded from the on-disk split.  No interaction or curriculum occurs during probing; the TRM forward pass is used in inference mode with frozen weights.
+
+\subsection{Variables collected}
+
+Table~\ref{tab:measured} lists the raw quantities recorded per example (puzzle $\times$ cell $\times$ recursion index).  All analysis scores ($F_1$, exact match, patching $\Delta$, CKA) are derived from these in Section~\ref{sec:analytic}.
+
+\begin{table}[H]
+\centering
+\caption{Variables recorded per (puzzle, cell, recursion index) during data collection.}
+\label{tab:measured}
+\small
+\begin{tabular}{@{}llp{3cm}@{}}
+\toprule
+\textbf{Symbol} & \textbf{Role} & \textbf{Domain} \\
+\midrule
+$(T,i)$ & Outer and inner recursion indices at which $z$ is extracted & $T \!\in\! \{1,2,3\}$, $i \!\in\! \{1,\ldots,4\}$ \\
+$c$ & Cell position in the 81-cell grid & $\{0,\ldots,80\}$ \\
+$z_{T,i,c}$ & Latent vector for cell $c$ at recursion step $(T,i)$ & $\mathbb{R}^{d}$ \\
+$S_{c}$ & Candidate set from classical constraint propagation & subset of $\{1,\ldots,9\}$ \\
+$b$ & Backtracking flag: did the DFS solver backtrack on this puzzle? & $\{0,1\}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Variables held fixed vs.\ systematically varied}
+
+\textbf{Fixed:} all TRM training hyperparameters, architecture (RoPE + CastedLinear), dataset version, and seed.  A single converged checkpoint is used; a second seed may be added if time permits.
+
+\textbf{Varied systematically during measurement:}
+\begin{itemize}[nosep]
+    \item \textbf{$(T,i)$ grid:} all 12 recursion index pairs ($H_\text{cycles} \times L_\text{cycles} = 3 \times 4$).
+    \item \textbf{Probe family:} linear (nine binary classifiers, Eq.~\ref{eq:probe-logits}) vs.\ two-layer MLP with GELU.
+    \item \textbf{Probe train/validation split:} 80/20 puzzle split; TRM weights frozen.  Seeds recorded.
+\end{itemize}
+
+\textbf{Optional (if core pipeline is stable):} a second checkpoint with $L_\text{cycles} = 3$ to test whether fewer inner steps weakens progressive encoding.
+
+\subsection{Sample sizes and reporting units}
+
+Let $N_\text{train}$ and $N_\text{val}$ denote probe puzzle counts (target order $10^{4}$ from the full Sudoku-Extreme build; documented if smaller).  Each puzzle contributes 81 cell examples per $(T,i)$, giving $81 N_\text{train}$ per-cell training samples per index pair.  Primary accuracy unit: micro-averaged $F_1$ over digit membership in $S_c$ (handles variable set size).  Secondary unit: exact set match rate.
+
+
+\section{Analytic techniques}
+\label{sec:analytic}
+
+\subsection{Probe fitting}
+
+Probes are trained by minimizing loss~\eqref{eq:bce} on probe-training puzzles.  Probe hyperparameters (weight decay, dropout, early stopping) are tuned on the probe validation split only; TRM weights are never updated.
+
+\textbf{Chance baseline:} a permuted-label null is constructed by shuffling candidate-set labels within each $|S_c|$ stratum, then refitting a linear probe.  This gives the expected $F_1$ and variance under an uninformed predictor that has the same label-difficulty distribution.
+
+\subsection{Summary statistics}
+
+For each $(T,i)$ and probe family:
+\begin{itemize}[nosep]
+    \item \textbf{Mean $F_1$} with 95\% bootstrap confidence intervals (10{,}000 resamples at the puzzle level, since cells within a puzzle are not independent).
+    \item \textbf{Exact set match rate} with a 95\% confidence interval.  Because this is a proportion (fraction of cells where $\hat{S}_c = S_c$ exactly), the confidence interval uses the \textbf{Wilson score formula}~\cite{wilson1927}, which gives accurate interval coverage even when the proportion is near 0 or 1, unlike a naive normal approximation.
+    \item \textbf{Trend across inner steps:} for H1, I need to check whether $F_1$ rises as $i$ goes from 1 to $n$ at fixed $T$.  I will use \textbf{Spearman's rank correlation} $\rho$ between the index $i$ and the corresponding mean $F_1$ values.  Spearman's $\rho$ is the right choice here because it only assumes a monotone relationship (not a linear one), and the scale of $F_1$ improvements may be uneven across steps.  A positive $\rho$ close to $1$ supports H1; $\rho \approx 0$ invalidates it.
+\end{itemize}
+
+\subsection{Visualizations}
+
+\begin{itemize}[nosep]
+    \item \textbf{Line plots:} mean validation $F_1$ vs.\ inner step $i$ for each outer step $T$, with separate lines for linear vs.\ MLP probes.  This is the primary display for H1.
+    \item \textbf{Heatmaps:} a $T \times i$ grid colored by mean $F_1$, to show at a glance where in the recursion schedule candidate-set information appears.
+    \item \textbf{Accuracy split by backtracking:} the same line plots reproduced separately for puzzles with $b=1$ and $b=0$, to check whether candidate-set encoding differs on harder puzzles.
+    \item \textbf{CKA plots:} the same heatmap format applied to CKA values, showing representational similarity between two checkpoints at each $(T,i)$.
+\end{itemize}
+
+\subsection{Hypothesis tests and multiple comparisons}
+
+Probe $F_1$ is compared to the permuted-label null with a one-sided test at each $(T,i)$.  Because 12 index pairs are tested per probe family, \textbf{Benjamini--Hochberg FDR} control at level $q = 0.05$ is applied to control false discoveries.  The trend in H1 is tested with Spearman's $\rho$ as described above.
+
+\subsection{Activation patching summaries}
+
+For the best $(T,i)$ by $F_1$, report mean change in cell cross-entropy $\Delta$ after patching $z$ from a mismatched puzzle, with bootstrap intervals.  Visualization: bar chart of $\Delta$ by intervention type (shuffle within puzzle vs.\ cross-puzzle swap).
+
+\subsection{CKA estimation}
+
+For each pair of checkpoints and each $(T,i)$, form $\mathbf{X}$ and $\mathbf{Y}$ by stacking $z_{T,i,c}$ vectors for the same (puzzle, cell) pairs from two models, column-center each, and apply~\eqref{eq:cka}.  Report the scalar with a bootstrap confidence interval (10{,}000 puzzle-level resamples).
+
+\subsection{Logging}
+
+All metrics, probe weights, random seeds, and dataset checksums are logged to \textbf{Weights \& Biases} so that all figures and tables can be traced to exact runs.
+
+
+\bibliographystyle{plainnat}
+\bibliography{references.bib}
+
+\end{document}
