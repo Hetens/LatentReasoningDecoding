@@ -56,6 +56,7 @@ cd "$REPO_DIR"
 export PYTHONPATH="$REPO_DIR/trm_base:$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 # ---- Step 1: Extract activations (GPU) ----
+# 5000 examples × 2 ACT steps × (z_L + z_H) ≈ 21 GB on disk
 echo ">>> [1/6] Extracting activations …"
 python -m experiments.probing.extract_activations \
     --config "$CONFIG" \
@@ -63,7 +64,8 @@ python -m experiments.probing.extract_activations \
     --data-path "$DATA_PATH" \
     --output-dir "$ACT_DIR" \
     --split test \
-    --batch-size 128
+    --batch-size 128 \
+    --max-examples 5000
 
 # ---- Step 2: Compute candidate sets (CPU-bound) ----
 echo ">>> [2/6] Computing candidate sets & backtracking flags …"

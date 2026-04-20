@@ -2,12 +2,16 @@
 torch>=2.0.0
 numpy>=1.24.0
 
+# Optimizer (Samsung TRM paper)
+adam-atan2
+
 # Transformers and tokenizers
 transformers>=4.30.0
 transformer-lens>=1.0.0
 
 # Data loading and processing
 datasets>=2.12.0
+huggingface_hub
 
 # Type annotations
 jaxtyping>=0.2.0
@@ -17,3 +21,14 @@ einops>=0.6.0
 
 # Progress bars
 tqdm>=4.65.0
+
+# Config / training infra
+pydantic
+pyyaml
+wandb
+coolname
+argdantic
+
+# Probing experiments
+scipy
+matplotlib
