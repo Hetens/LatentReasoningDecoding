@@ -10,7 +10,7 @@ import torch
 import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
-from torch.optim import AdamW
+from adam_atan2 import AdamATan2
 
 import tqdm
 import wandb
@@ -20,6 +20,7 @@ import pydantic
 from puzzle_dataset import PuzzleDataset, PuzzleDatasetConfig, PuzzleDatasetMetadata
 from functions import load_model_class, get_model_source_path
 from sparse_embedding import CastedSparseEmbeddingSignSGD_Distributed
+from ema import EMAHelper
 
 device =torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
@@ -217,7 +218,7 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
             
     if config.arch.puzzle_emb_ndim == 0:
         optimizers = [
-            AdamW(
+            AdamATan2(
                 model.parameters(),
                 lr = 0,
                 weight_decay =config.weight_decay,
@@ -244,7 +245,7 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size
             ),
-            AdamW(
+            AdamATan2(
                 model.parameters(),
                 lr = config.lr,
                 weight_decay =config.weight_decay,
@@ -647,6 +648,9 @@ def launch(config_path: str) -> None:
         wandb.log({"num_params": sum(x.numel() for x in train_state.model.parameters())}, step=0)
         save_code_and_config(config)
 
+    if config.ema:
+        ema_helper = EMAHelper(mu=config.ema_rate)
+        ema_helper.register(train_state.model)
 
     # Training Loop
     for _iter_id in range(total_iters):
@@ -662,6 +666,8 @@ def launch(config_path: str) -> None:
             if RANK == 0 and metrics is not None:
                 wandb.log(metrics, step=train_state.step)
                 progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
+            if config.ema:
+                ema_helper.update(train_state.model)
 
         if _iter_id >= config.min_eval_interval:
             ############ Evaluation
