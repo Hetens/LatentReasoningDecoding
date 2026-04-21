@@ -24,7 +24,7 @@ set -euo pipefail
 REPO_DIR="$(pwd)"
 
 # =====================  EDIT THESE  =====================
-CHECKPOINT="checkpoints/Sudoku-extreme-1k-aug-1000-ACT-torch/YOUR_RUN_NAME/step_50000.pt"
+CHECKPOINT="checkpoints/Sudoku-extreme-1k-aug-1000-ACT-torch/TinyRecursiveReasoningModel_ACTV1 analytic-cobra/step_65100.pt"
 CONFIG="trm_base/config_pretrain_paper.yml"
 DATA_PATH="data/sudoku-extreme-1k-aug-1000"
 # ========================================================
