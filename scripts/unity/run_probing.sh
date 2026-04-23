@@ -11,7 +11,7 @@
 
 #SBATCH --job-name=TRM-Probing
 #SBATCH --partition=gpu
-#SBATCH --time=06:00:00
+#SBATCH --time=10:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=8
 #SBATCH --gpus=1

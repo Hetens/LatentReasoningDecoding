@@ -40,6 +40,8 @@ def linear_cka(X: np.ndarray, Y: np.ndarray) -> float:
     Returns:
         CKA value in [0, 1].
     """
+    X = X.astype(np.float64)
+    Y = Y.astype(np.float64)
     X = X - X.mean(axis=0, keepdims=True)
     Y = Y - Y.mean(axis=0, keepdims=True)
 
