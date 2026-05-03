@@ -248,25 +248,27 @@ def main() -> None:
 
         # --- Extract donor z_L at the target step ---
         inner = model.inner
-        inner_carry = inner.empty_carry(len(di))
-        inner_carry.z_H = inner_carry.z_H.to(device)
-        inner_carry.z_L = inner_carry.z_L.to(device)
-        inner_carry = inner.reset_carry(torch.ones(len(di), dtype=torch.bool, device=device), inner_carry)
-
-        seq_info = dict(cos_sin=inner.rotary_emb() if hasattr(inner, "rotary_emb") else None)
-        input_emb = inner._input_embeddings(batch_donor["inputs"], batch_donor["puzzle_identifiers"])
-        z_H_d, z_L_d = inner_carry.z_H, inner_carry.z_L
-
-        # Run the full ACT warm-up on donor to get its z.
         halt_max = cfg.halt_max_steps
-        for act_step in range(1, halt_max + 1):
-            z_H_d_old, z_L_d_old = z_H_d, z_L_d
-            for T in range(cfg.H_cycles):
-                for i in range(cfg.L_cycles):
-                    z_L_d = inner.L_level(z_L_d, z_H_d + input_emb, **seq_info)
-                    if act_step == halt_max and T == tgt_T and i == tgt_i:
-                        donor_z_L = z_L_d.clone()
-                z_H_d = inner.L_level(z_H_d, z_L_d, **seq_info)
+
+        with torch.no_grad():
+            inner_carry = inner.empty_carry(len(di))
+            inner_carry.z_H = inner_carry.z_H.to(device)
+            inner_carry.z_L = inner_carry.z_L.to(device)
+            inner_carry = inner.reset_carry(torch.ones(len(di), dtype=torch.bool, device=device), inner_carry)
+
+            seq_info = dict(cos_sin=inner.rotary_emb() if hasattr(inner, "rotary_emb") else None)
+            input_emb = inner._input_embeddings(batch_donor["inputs"], batch_donor["puzzle_identifiers"])
+            z_H_d, z_L_d = inner_carry.z_H, inner_carry.z_L
+
+            for act_step in range(1, halt_max + 1):
+                for T in range(cfg.H_cycles):
+                    for i in range(cfg.L_cycles):
+                        z_L_d = inner.L_level(z_L_d, z_H_d + input_emb, **seq_info)
+                        if act_step == halt_max and T == tgt_T and i == tgt_i:
+                            donor_z_L = z_L_d.clone()
+                    z_H_d = inner.L_level(z_H_d, z_L_d, **seq_info)
+                z_H_d = z_H_d.detach()
+                z_L_d = z_L_d.detach()
 
         # --- Cross-puzzle swap ---
         clean, patched = _run_clean_and_patched(
@@ -288,24 +290,25 @@ def main() -> None:
             dim=1,
             index=perm.unsqueeze(-1).expand_as(donor_z_L),
         )
-        # Actually re-use original z, but shuffle cell positions within it.
-        # We need z_L from the original, not the donor, and then shuffle.
-        # Let's get original z_L at target step via a separate pass:
-        inner_carry_o = inner.empty_carry(len(oi))
-        inner_carry_o.z_H = inner_carry_o.z_H.to(device)
-        inner_carry_o.z_L = inner_carry_o.z_L.to(device)
-        inner_carry_o = inner.reset_carry(
-            torch.ones(len(oi), dtype=torch.bool, device=device), inner_carry_o,
-        )
-        input_emb_o = inner._input_embeddings(batch_orig["inputs"], batch_orig["puzzle_identifiers"])
-        z_H_o, z_L_o = inner_carry_o.z_H, inner_carry_o.z_L
-        for act_step in range(1, halt_max + 1):
-            for T in range(cfg.H_cycles):
-                for i in range(cfg.L_cycles):
-                    z_L_o = inner.L_level(z_L_o, z_H_o + input_emb_o, **seq_info)
-                    if act_step == halt_max and T == tgt_T and i == tgt_i:
-                        orig_z_L = z_L_o.clone()
-                z_H_o = inner.L_level(z_H_o, z_L_o, **seq_info)
+        # Re-use original z, but shuffle cell positions within it.
+        with torch.no_grad():
+            inner_carry_o = inner.empty_carry(len(oi))
+            inner_carry_o.z_H = inner_carry_o.z_H.to(device)
+            inner_carry_o.z_L = inner_carry_o.z_L.to(device)
+            inner_carry_o = inner.reset_carry(
+                torch.ones(len(oi), dtype=torch.bool, device=device), inner_carry_o,
+            )
+            input_emb_o = inner._input_embeddings(batch_orig["inputs"], batch_orig["puzzle_identifiers"])
+            z_H_o, z_L_o = inner_carry_o.z_H, inner_carry_o.z_L
+            for act_step in range(1, halt_max + 1):
+                for T in range(cfg.H_cycles):
+                    for i in range(cfg.L_cycles):
+                        z_L_o = inner.L_level(z_L_o, z_H_o + input_emb_o, **seq_info)
+                        if act_step == halt_max and T == tgt_T and i == tgt_i:
+                            orig_z_L = z_L_o.clone()
+                    z_H_o = inner.L_level(z_H_o, z_L_o, **seq_info)
+                z_H_o = z_H_o.detach()
+                z_L_o = z_L_o.detach()
 
         perm_o = torch.stack([torch.randperm(orig_z_L.shape[1], device=device) for _ in range(len(oi))])
         shuffled_orig_z_L = torch.gather(
