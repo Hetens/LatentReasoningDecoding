@@ -106,7 +106,7 @@ def analyze_candidate_sizes(labels_dir: str, output_dir: str) -> None:
 
     # --- Plot: box plot ---
     data_box = [sc_easy[sc_easy > 1], sc_hard[sc_hard > 1]]
-    bp = ax2.boxplot(data_box, labels=["Easy", "Hard"], patch_artist=True,
+    bp = ax2.boxplot(data_box, tick_labels=["Easy", "Hard"], patch_artist=True,
                      widths=0.5)
     bp["boxes"][0].set_facecolor("#4c72b0")
     bp["boxes"][0].set_alpha(0.6)
