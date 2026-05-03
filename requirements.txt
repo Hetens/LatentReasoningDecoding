@@ -32,3 +32,5 @@ argdantic
 # Probing experiments
 scipy
 matplotlib
+scikit-learn
+umap-learn
