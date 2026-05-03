@@ -93,10 +93,9 @@ def plot_f1_vs_inner_step(
     ax.legend(fontsize=7, ncol=2)
     ax.grid(alpha=0.3)
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, "f1_vs_inner_step.pdf"), dpi=200)
     fig.savefig(os.path.join(output_dir, "f1_vs_inner_step.png"), dpi=200)
     plt.close(fig)
-    print("  Saved f1_vs_inner_step.{pdf,png}")
+    print("  Saved f1_vs_inner_step.png")
 
 
 # ---------------------------------------------------------------------------
@@ -134,10 +133,9 @@ def plot_f1_heatmap(
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, "f1_heatmap.pdf"), dpi=200)
     fig.savefig(os.path.join(output_dir, "f1_heatmap.png"), dpi=200)
     plt.close(fig)
-    print("  Saved f1_heatmap.{pdf,png}")
+    print("  Saved f1_heatmap.png")
 
 
 # ---------------------------------------------------------------------------
@@ -173,10 +171,9 @@ def plot_f1_by_backtracking(
         ax.grid(alpha=0.3)
 
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, "f1_by_backtracking.pdf"), dpi=200)
     fig.savefig(os.path.join(output_dir, "f1_by_backtracking.png"), dpi=200)
     plt.close(fig)
-    print("  Saved f1_by_backtracking.{pdf,png}")
+    print("  Saved f1_by_backtracking.png")
 
 
 # ---------------------------------------------------------------------------
@@ -212,17 +209,21 @@ def plot_exact_match_heatmap(
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, "exact_match_heatmap.pdf"), dpi=200)
     fig.savefig(os.path.join(output_dir, "exact_match_heatmap.png"), dpi=200)
     plt.close(fig)
-    print("  Saved exact_match_heatmap.{pdf,png}")
+    print("  Saved exact_match_heatmap.png")
 
 
 # ---------------------------------------------------------------------------
 # Plot 5 — CKA heatmap
 # ---------------------------------------------------------------------------
 
-def plot_cka_heatmap(cka_dir: str, output_dir: str) -> None:
+def plot_cka_heatmap(
+    cka_dir: str,
+    output_dir: str,
+    h_cycles: int = 3,
+    l_cycles: int = 6,
+) -> None:
     cka_file = os.path.join(cka_dir, "self_cka_z_L.npy")
     if not os.path.exists(cka_file):
         print("  Skipping CKA heatmap (self_cka_z_L.npy not found).")
@@ -236,16 +237,10 @@ def plot_cka_heatmap(cka_dir: str, output_dir: str) -> None:
 
     ax.set_xticks(range(K))
     ax.set_yticks(range(K))
-    # Try to label as (T,i)
-    labels = []
-    # Guess dimensions: K = H * L
-    for H in range(1, K + 1):
-        if K % H == 0:
-            L = K // H
-            if 1 < H <= 6 and 1 < L <= 10:
-                labels = [f"({t+1},{i+1})" for t in range(H) for i in range(L)]
-                break
-    if not labels:
+
+    if h_cycles * l_cycles == K:
+        labels = [f"({t+1},{i+1})" for t in range(h_cycles) for i in range(l_cycles)]
+    else:
         labels = [str(k) for k in range(K)]
 
     ax.set_xticklabels(labels, fontsize=6, rotation=45, ha="right")
@@ -256,10 +251,9 @@ def plot_cka_heatmap(cka_dir: str, output_dir: str) -> None:
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, "cka_heatmap.pdf"), dpi=200)
     fig.savefig(os.path.join(output_dir, "cka_heatmap.png"), dpi=200)
     plt.close(fig)
-    print("  Saved cka_heatmap.{pdf,png}")
+    print("  Saved cka_heatmap.png")
 
 
 # ---------------------------------------------------------------------------
@@ -291,10 +285,9 @@ def plot_null_comparison(
         ax.legend()
         ax.grid(axis="y", alpha=0.3)
         fig.tight_layout()
-        fig.savefig(os.path.join(output_dir, f"null_comparison_{probe_type}.pdf"), dpi=200)
         fig.savefig(os.path.join(output_dir, f"null_comparison_{probe_type}.png"), dpi=200)
         plt.close(fig)
-        print(f"  Saved null_comparison_{probe_type}.{{pdf,png}}")
+        print(f"  Saved null_comparison_{probe_type}.png")
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +299,8 @@ def main() -> None:
     parser.add_argument("--probe-dir", required=True, help="Directory with probe_results_*.json")
     parser.add_argument("--cka-dir", default=None, help="Directory with self_cka_z_L.npy (optional).")
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--h-cycles", type=int, default=3, help="H_cycles for CKA axis labels.")
+    parser.add_argument("--l-cycles", type=int, default=6, help="L_cycles for CKA axis labels.")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -324,7 +319,8 @@ def main() -> None:
     plot_null_comparison(all_results, args.output_dir)
 
     if args.cka_dir:
-        plot_cka_heatmap(args.cka_dir, args.output_dir)
+        plot_cka_heatmap(args.cka_dir, args.output_dir,
+                         h_cycles=args.h_cycles, l_cycles=args.l_cycles)
 
     print("All plots generated.")
 
