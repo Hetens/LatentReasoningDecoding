@@ -369,19 +369,21 @@ def plot_per_cell_maps(
 
     ncols = min(5, n_puz)
     nrows = (n_puz + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(4.5 * ncols, 4 * nrows),
-                             squeeze=False)
 
+    fig = plt.figure(figsize=(4.5 * ncols + 0.8, 4.2 * nrows))
+    gs = fig.add_gridspec(nrows, ncols + 1, width_ratios=[1] * ncols + [0.04],
+                          wspace=0.35, hspace=0.4)
+
+    scatter = None
     for idx in range(n_puz):
-        ax = axes[idx // ncols, idx % ncols]
+        ax = fig.add_subplot(gs[idx // ncols, idx % ncols])
         sc_vals = sc[idx]
         scatter = ax.scatter(Z_all[idx, :, 0], Z_all[idx, :, 1],
                              c=sc_vals, cmap="viridis", s=30, alpha=0.8,
                              edgecolors="k", linewidths=0.3,
-                             vmin=1, vmax=max(8, sc_vals.max()))
+                             vmin=1, vmax=8)
 
         for c_idx in range(C):
-            row, col = c_idx // 9, c_idx % 9
             inp_val = inputs[puz_idx[idx], c_idx]
             if inp_val >= 2:
                 digit = str(int(inp_val) - 1)
@@ -397,13 +399,12 @@ def plot_per_cell_maps(
         ax.tick_params(labelsize=5)
         ax.grid(alpha=0.15)
 
-    for idx in range(n_puz, nrows * ncols):
-        axes[idx // ncols, idx % ncols].set_visible(False)
+    if scatter is not None:
+        cax = fig.add_subplot(gs[:, -1])
+        fig.colorbar(scatter, cax=cax, label="$|S_c|$")
 
-    fig.colorbar(scatter, ax=axes, label="$|S_c|$", fraction=0.02, pad=0.02)
     fig.suptitle(f"Per-cell PCA at $(T={target_T+1}, i={last_i+1})$ — "
-                 f"digits annotated on given cells", fontsize=12, y=1.01)
-    fig.tight_layout()
+                 f"digits annotated on given cells", fontsize=12)
     fig.savefig(os.path.join(out, "per_cell_maps.png"), dpi=200,
                 bbox_inches="tight")
     plt.close(fig)
