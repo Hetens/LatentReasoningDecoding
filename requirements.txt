@@ -3,7 +3,7 @@ torch>=2.0.0
 numpy>=1.24.0
 
 # Optimizer (Samsung TRM paper)
-adam-atan2
+# adam-atan2
 
 # Transformers and tokenizers
 transformers>=4.30.0
