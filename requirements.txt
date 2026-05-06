@@ -34,3 +34,6 @@ scipy
 matplotlib
 scikit-learn
 umap-learn
+pacmap
+trimap
+hdbscan
