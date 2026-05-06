@@ -141,7 +141,7 @@ def plot_faceted_by_T(embedding, meta, method_name, output_dir):
             ax.set_ylabel(f"{method_name} 2")
     fig.colorbar(sc, ax=axes, label="Inner step $i$", shrink=0.8)
     fig.suptitle(f"{method_name}: faceted by outer cycle, coloured by inner step", fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.subplots_adjust(left=0.05, right=0.92, top=0.90, bottom=0.08, wspace=0.15)
     fig.savefig(os.path.join(output_dir, f"{method_name.lower()}_faceted_by_T.png"), dpi=150)
     plt.close(fig)
 

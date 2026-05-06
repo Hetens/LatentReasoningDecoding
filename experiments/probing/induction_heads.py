@@ -43,7 +43,6 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
 from tqdm import tqdm
 
 import matplotlib
@@ -62,9 +61,11 @@ from trm import (  # noqa: E402
     TinyRecursiveReasoningModel_ACTV1InnerCarry,
     TinyRecursiveReasoningModel_ACTV1_Inner,
 )
-from losses import ACTLossHead  # noqa: E402
-from pretrain import load_composed_config, PretrainConfig  # noqa: E402
-from metadata import PuzzleDatasetMetadata  # noqa: E402
+
+_EXPERIMENTS_ROOT = os.path.abspath(os.path.dirname(__file__))
+if _EXPERIMENTS_ROOT not in sys.path:
+    sys.path.insert(0, _EXPERIMENTS_ROOT)
+from extract_activations import load_trm_model, load_test_data  # noqa: E402
 
 
 # ===================================================================
@@ -277,51 +278,21 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
-    # Load config and model
+    # Load model using the shared helper from extract_activations
     print("Loading config and model...")
-    config = load_composed_config(args.config)
-    pretrain_cfg = PretrainConfig(**config)
-
-    with open(pretrain_cfg.arch_config_path, "r") as f:
-        arch_config = yaml.safe_load(f)
-
-    arch_config["batch_size"] = args.batch_size
-    metadata = PuzzleDatasetMetadata.from_name(pretrain_cfg.data_name)
-    arch_config["seq_len"] = metadata.seq_len
-    arch_config["vocab_size"] = metadata.vocab_size
-    arch_config["num_puzzle_identifiers"] = metadata.num_puzzle_identifiers
-
-    loss_config = arch_config.pop("loss")
-    model_name = arch_config.pop("name")
-    model = TinyRecursiveReasoningModel_ACTV1(arch_config)
-
-    # Load checkpoint
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
-    state = ckpt if not isinstance(ckpt, dict) or "model_state_dict" not in ckpt else ckpt["model_state_dict"]
-    # Handle torch.compile prefix
-    cleaned = {}
-    for k, v in state.items():
-        k = k.replace("_orig_mod.", "")
-        if k.startswith("model."):
-            k = k[len("model."):]
-        cleaned[k] = v
-    model.load_state_dict(cleaned, strict=False)
-    model = model.to(device).eval()
+    model = load_trm_model(args.config, args.checkpoint, device, args.data_path, args.split)
     inner = model.inner
     puzzle_emb_len = inner.puzzle_emb_len
 
     print(f"Model loaded. H_cycles={model.config.H_cycles}, L_cycles={model.config.L_cycles}")
     print(f"L_layers={model.config.L_layers}, num_heads={model.config.num_heads}, head_dim={model.config.hidden_size // model.config.num_heads}")
 
-    # Load data
+    # Load data using the shared helper from extract_activations
     print("Loading data...")
-    from datasets import load_from_disk
-    dataset = load_from_disk(args.data_path)
-    if args.split in dataset:
-        dataset = dataset[args.split]
-
-    n_examples = min(args.max_examples, len(dataset))
+    raw_data = load_test_data(args.data_path, args.split, max_examples=args.max_examples)
+    n_examples = raw_data["inputs"].shape[0]
     constraint_masks = build_constraint_masks(81)
     baselines = random_baseline_scores(constraint_masks)
     print(f"Random baselines: {baselines}")
@@ -331,13 +302,9 @@ def main():
 
     for start in tqdm(range(0, n_examples, args.batch_size), desc="Extracting attention"):
         end = min(start + args.batch_size, n_examples)
-        batch_data = dataset[start:end]
         batch = {
-            "inputs": torch.tensor(np.array(batch_data["inputs"]), dtype=torch.long, device=device),
-            "labels": torch.tensor(np.array(batch_data["labels"]), dtype=torch.long, device=device),
-            "puzzle_identifiers": torch.tensor(
-                np.array(batch_data["puzzle_identifiers"]), dtype=torch.long, device=device
-            ),
+            k: torch.tensor(raw_data[k][start:end], dtype=torch.long, device=device)
+            for k in ("inputs", "labels", "puzzle_identifiers")
         }
 
         # Run full ACT to final step, extract attention at that step
@@ -492,13 +459,9 @@ def main():
               f"baseline = {baseline_any:.4f})")
 
         # Re-run single puzzle to get attention pattern for visualization
-        single_data = dataset[0:1]
         single_batch = {
-            "inputs": torch.tensor(np.array(single_data["inputs"]), dtype=torch.long, device=device),
-            "labels": torch.tensor(np.array(single_data["labels"]), dtype=torch.long, device=device),
-            "puzzle_identifiers": torch.tensor(
-                np.array(single_data["puzzle_identifiers"]), dtype=torch.long, device=device
-            ),
+            k: torch.tensor(raw_data[k][0:1], dtype=torch.long, device=device)
+            for k in ("inputs", "labels", "puzzle_identifiers")
         }
         patterns = extract_attention_patterns(inner, single_batch, puzzle_emb_len)
         key = f"zL_T{H_cycles}_i{L_cycles}_layer{top_layer}"
