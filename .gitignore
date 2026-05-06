@@ -8,3 +8,4 @@ wandb
 checkpoints
 .env
 results
+docs
