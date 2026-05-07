@@ -11,6 +11,10 @@ Methods:
   - HDBSCAN (density-based, no k required)
   - Analysis: cluster purity w.r.t. outer cycle T, |S_c|, row/col/box
 
+Also writes pca_explained_variance.png (bar + cumulative line for each PC used before
+clustering, default 50) and prints the cumulative fraction explicitly; numerical arrays
+are saved as pca_explained_variance.npz.
+
 Usage (from repo root):
     python -m experiments.probing.cluster_latents \
         --activations-dir results/probing/activations \
@@ -100,6 +104,53 @@ def load_data(args):
         "box": np.concatenate(meta_box),
     }
     return X, meta
+
+
+def plot_pca_explained_variance(pca: PCA, output_dir: str,
+                                title_suffix: str = "") -> tuple[np.ndarray, float]:
+    """Bar + cumulative line for each fitted PC; saves pca_explained_variance.png."""
+    ev = pca.explained_variance_ratio_
+    cum = np.cumsum(ev)
+    nc = len(ev)
+
+    fig_w = max(7.0, 0.22 * nc)
+    fig, ax = plt.subplots(figsize=(fig_w, 3.8))
+    x = np.arange(1, nc + 1)
+    ax.bar(x, ev * 100, color="#4c72b0", label="Individual", width=0.72)
+    ax.plot(x, cum * 100, "o-", color="#c44e52", markersize=3 + min(5, 40 / max(nc, 1)),
+            label="Cumulative")
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance (%)")
+    ttl = "PCA explained variance"
+    if title_suffix:
+        ttl = f"{ttl} ({title_suffix})"
+    ax.set_title(ttl)
+    step = max(1, nc // 12)
+    xticks = list(range(1, nc + 1, step))
+    if xticks[-1] != nc:
+        xticks.append(nc)
+    ax.set_xticks(xticks)
+    ax.legend(fontsize=8, loc="upper right")
+    ax.grid(axis="y", alpha=0.3)
+    ax.set_xlim(0.4, nc + 0.6)
+    fig.tight_layout()
+    out_png = os.path.join(output_dir, "pca_explained_variance.png")
+    fig.savefig(out_png, dpi=200)
+    plt.close(fig)
+
+    cumulative_total = float(cum[-1])
+    print(f"  Saved {out_png} ({nc} PCs, cumulative variance = {cumulative_total:.4f}"
+          f" = {100 * cumulative_total:.2f}%)")
+
+    npz_path = os.path.join(output_dir, "pca_explained_variance.npz")
+    np.savez_compressed(
+        npz_path,
+        explained_variance_ratio=ev,
+        cumulative_explained_variance=cum,
+        n_components=nc,
+        cumulative_fraction_at_n=cumulative_total,
+    )
+    return ev, cumulative_total
 
 
 def cluster_purity(cluster_labels, property_labels):
@@ -233,13 +284,35 @@ def main():
     print(f"  X shape: {X.shape}, total points: {X.shape[0]}")
 
     # Optional PCA pre-reduction
+    pca_fit: PCA | None = None
     if args.pca_dims > 0 and args.pca_dims < X.shape[1]:
         print(f"Reducing to {args.pca_dims}D via PCA...")
-        pca = PCA(n_components=args.pca_dims, random_state=42)
-        X_reduced = pca.fit_transform(X)
-        var_explained = pca.explained_variance_ratio_.sum()
-        print(f"  {args.pca_dims} PCs explain {var_explained:.1%} of variance")
+        pca_fit = PCA(n_components=args.pca_dims, random_state=42)
+        X_reduced = pca_fit.fit_transform(X)
+        var_explained = float(pca_fit.explained_variance_ratio_.sum())
+        print(f"\n  Cumulative variance captured by first {args.pca_dims} PCs: "
+              f"{var_explained:.6f}  ({100 * var_explained:.2f}%)\n")
+        plot_pca_explained_variance(
+            pca_fit, args.output_dir,
+            title_suffix=f"first {args.pca_dims} PCs (same fit as clustering)",
+        )
+    elif args.pca_dims >= X.shape[1]:
+        print(f"  --pca-dims {args.pca_dims} >= raw dim {X.shape[1]}; clustering without PCA reduction.")
+        X_reduced = X
     else:
+        # Full-D clustering: still report + plot variance of first 50 PCs for diagnostics
+        n_diag = min(50, X.shape[1])
+        print(f"Clustering in full {X.shape[1]}D (no PCA reduction). "
+              f"Diagnostic: fitting {n_diag} PCs on raw latents for variance plot only.")
+        pca_fit = PCA(n_components=n_diag, random_state=42)
+        pca_fit.fit(X)
+        var_diag = float(pca_fit.explained_variance_ratio_.sum())
+        print(f"\n  Cumulative variance captured by first {n_diag} PCs (diagnostic only): "
+              f"{var_diag:.6f}  ({100 * var_diag:.2f}%)\n")
+        plot_pca_explained_variance(
+            pca_fit, args.output_dir,
+            title_suffix=f"first {n_diag} PCs (diagnostic; clustering uses {X.shape[1]}D)",
+        )
         X_reduced = X
 
     scaler = StandardScaler()

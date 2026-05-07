@@ -33,7 +33,6 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 
 try:
     import pacmap
@@ -94,14 +93,34 @@ def load_data(args):
 
 
 def plot_by_T(embedding, meta, method_name, output_dir):
-    """3-colour scatter grouped by outer cycle T."""
+    """3-colour scatter grouped by outer cycle T.
+
+    For TriMAP the T=3 points sit on top of T=1 and T=2 and obscure them, so we
+    draw T=1 and T=2 as hollow rings (open markers) and T=3 as filled discs;
+    this keeps the late-cycle cluster solid while letting the earlier cycles
+    show through. The legend is placed in an unused corner of the plot
+    (lower-right; PaCMAP/TriMAP layouts leave the lower-right relatively empty).
+    """
     colors = {1: "#e74c3c", 2: "#3498db", 3: "#2ecc71"}
     fig, ax = plt.subplots(figsize=(8, 7))
+
     for T in [1, 2, 3]:
         mask = meta["T"] == T
-        ax.scatter(embedding[mask, 0], embedding[mask, 1],
-                   c=colors[T], s=4, alpha=0.3, label=f"T={T}", rasterized=True)
-    ax.legend(markerscale=4)
+        if T == 3:
+            ax.scatter(embedding[mask, 0], embedding[mask, 1],
+                       c=colors[T], s=10, alpha=0.45,
+                       label=f"T={T}", rasterized=True,
+                       edgecolors="none")
+        else:
+            ax.scatter(embedding[mask, 0], embedding[mask, 1],
+                       facecolors="none", edgecolors=colors[T],
+                       s=18, alpha=0.55, linewidths=0.6,
+                       label=f"T={T}", rasterized=True)
+
+    legend = ax.legend(markerscale=2.0, loc="lower right",
+                       framealpha=0.95, fontsize=11, title="Outer cycle")
+    legend.get_frame().set_edgecolor("#888888")
+
     ax.set_title(f"{method_name}: latent states by outer cycle T")
     ax.set_xlabel(f"{method_name} 1")
     ax.set_ylabel(f"{method_name} 2")
@@ -125,9 +144,20 @@ def plot_by_sc(embedding, meta, method_name, output_dir):
 
 
 def plot_faceted_by_T(embedding, meta, method_name, output_dir):
-    """Faceted panels: one per outer cycle, inner steps coloured."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5), sharex=True, sharey=True)
+    """Faceted panels: one per outer cycle, inner steps coloured.
+
+    The colorbar is placed in a dedicated axis to the right of all three panels
+    (instead of being attached to the third panel by default), so it does not
+    visually belong to the rightmost subplot.
+    """
+    fig = plt.figure(figsize=(19, 5.5))
+    gs = fig.add_gridspec(1, 4, width_ratios=[1, 1, 1, 0.05],
+                          left=0.05, right=0.94, top=0.88, bottom=0.10,
+                          wspace=0.12)
+    axes = [fig.add_subplot(gs[0, j]) for j in range(3)]
+    cax = fig.add_subplot(gs[0, 3])
     cmap = plt.cm.YlGn
+    sc = None
     for idx, T in enumerate([1, 2, 3]):
         ax = axes[idx]
         mask_T = meta["T"] == T
@@ -139,9 +169,10 @@ def plot_faceted_by_T(embedding, meta, method_name, output_dir):
         ax.set_xlabel(f"{method_name} 1")
         if idx == 0:
             ax.set_ylabel(f"{method_name} 2")
-    fig.colorbar(sc, ax=axes, label="Inner step $i$", shrink=0.8)
+        else:
+            ax.set_yticklabels([])
+    fig.colorbar(sc, cax=cax, label="Inner step $i$")
     fig.suptitle(f"{method_name}: faceted by outer cycle, coloured by inner step", fontsize=13)
-    fig.subplots_adjust(left=0.05, right=0.92, top=0.90, bottom=0.08, wspace=0.15)
     fig.savefig(os.path.join(output_dir, f"{method_name.lower()}_faceted_by_T.png"), dpi=150)
     plt.close(fig)
 
