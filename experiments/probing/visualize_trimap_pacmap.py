@@ -33,6 +33,9 @@ import torch
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+from matplotlib.colorbar import ColorbarBase
+from matplotlib.lines import Line2D
 
 try:
     import pacmap
@@ -95,30 +98,60 @@ def load_data(args):
 def plot_by_T(embedding, meta, method_name, output_dir):
     """3-colour scatter grouped by outer cycle T.
 
-    For TriMAP the T=3 points sit on top of T=1 and T=2 and obscure them, so we
-    draw T=1 and T=2 as hollow rings (open markers) and T=3 as filled discs;
-    this keeps the late-cycle cluster solid while letting the earlier cycles
-    show through. The legend is placed in an unused corner of the plot
-    (lower-right; PaCMAP/TriMAP layouts leave the lower-right relatively empty).
+    T=3 is dense and would hide T=1/T=2 if drawn last, so we draw T=3 first
+    (bottom), then T=2, then T=1 on top. T=1 and T=2 use hollow rings
+    (facecolors none); T=3 uses semi-transparent filled disks. Custom legend
+    handles match the marker styles.
     """
     colors = {1: "#e74c3c", 2: "#3498db", 3: "#2ecc71"}
     fig, ax = plt.subplots(figsize=(8, 7))
 
-    for T in [1, 2, 3]:
+    # Bottom to top: filled T=3, then ring T=2, then ring T=1
+    for T in [3, 2, 1]:
         mask = meta["T"] == T
         if T == 3:
-            ax.scatter(embedding[mask, 0], embedding[mask, 1],
-                       c=colors[T], s=10, alpha=0.45,
-                       label=f"T={T}", rasterized=True,
-                       edgecolors="none")
+            ax.scatter(
+                embedding[mask, 0], embedding[mask, 1],
+                c=colors[T], s=14, alpha=0.35,
+                rasterized=True, edgecolors="none", zorder=1,
+            )
         else:
-            ax.scatter(embedding[mask, 0], embedding[mask, 1],
-                       facecolors="none", edgecolors=colors[T],
-                       s=18, alpha=0.55, linewidths=0.6,
-                       label=f"T={T}", rasterized=True)
+            ax.scatter(
+                embedding[mask, 0], embedding[mask, 1],
+                facecolors="none",
+                edgecolors=colors[T],
+                s=22,
+                alpha=0.75,
+                linewidths=0.85,
+                rasterized=True,
+                zorder=3 if T == 1 else 2,
+            )
 
-    legend = ax.legend(markerscale=2.0, loc="lower right",
-                       framealpha=0.95, fontsize=11, title="Outer cycle")
+    legend_handles = [
+        Line2D(
+            [0], [0], marker="o", linestyle="None",
+            markerfacecolor="none", markeredgecolor=colors[1],
+            markeredgewidth=1.5, markersize=9, label="T=1",
+        ),
+        Line2D(
+            [0], [0], marker="o", linestyle="None",
+            markerfacecolor="none", markeredgecolor=colors[2],
+            markeredgewidth=1.5, markersize=9, label="T=2",
+        ),
+        Line2D(
+            [0], [0], marker="o", linestyle="None",
+            markerfacecolor=colors[3], markeredgecolor="none",
+            markersize=9, label="T=3",
+        ),
+    ]
+    legend = ax.legend(
+        handles=legend_handles,
+        markerscale=1.2,
+        loc="lower right",
+        framealpha=0.95,
+        fontsize=11,
+        title="Outer cycle",
+    )
     legend.get_frame().set_edgecolor("#888888")
 
     ax.set_title(f"{method_name}: latent states by outer cycle T")
@@ -144,36 +177,46 @@ def plot_by_sc(embedding, meta, method_name, output_dir):
 
 
 def plot_faceted_by_T(embedding, meta, method_name, output_dir):
-    """Faceted panels: one per outer cycle, inner steps coloured.
+    """Faceted panels: one per outer cycle, inner step i as colour.
 
-    The colorbar is placed in a dedicated axis to the right of all three panels
-    (instead of being attached to the third panel by default), so it does not
-    visually belong to the rightmost subplot.
+    Colorbar is drawn in a dedicated axes to the right of the three panels so it
+    never overlaps subplot T=3.
     """
-    fig = plt.figure(figsize=(19, 5.5))
-    gs = fig.add_gridspec(1, 4, width_ratios=[1, 1, 1, 0.05],
-                          left=0.05, right=0.94, top=0.88, bottom=0.10,
-                          wspace=0.12)
-    axes = [fig.add_subplot(gs[0, j]) for j in range(3)]
-    cax = fig.add_subplot(gs[0, 3])
     cmap = plt.cm.YlGn
-    sc = None
-    for idx, T in enumerate([1, 2, 3]):
-        ax = axes[idx]
+    fig, axes = plt.subplots(1, 3, figsize=(17.5, 5.6), sharex=True, sharey=True)
+    vmin, vmax = 1, 6
+
+    for T in [1, 2, 3]:
+        ax = axes[T - 1]
         mask_T = meta["T"] == T
         inner_vals = meta["i"][mask_T]
-        sc = ax.scatter(embedding[mask_T, 0], embedding[mask_T, 1],
-                        c=inner_vals, cmap=cmap, vmin=1, vmax=6,
-                        s=4, alpha=0.3, rasterized=True)
+        ax.scatter(
+            embedding[mask_T, 0], embedding[mask_T, 1],
+            c=inner_vals, cmap=cmap, vmin=vmin, vmax=vmax,
+            s=5, alpha=0.42, rasterized=True,
+        )
         ax.set_title(f"Outer cycle T={T}")
         ax.set_xlabel(f"{method_name} 1")
-        if idx == 0:
-            ax.set_ylabel(f"{method_name} 2")
-        else:
-            ax.set_yticklabels([])
-    fig.colorbar(sc, cax=cax, label="Inner step $i$")
-    fig.suptitle(f"{method_name}: faceted by outer cycle, coloured by inner step", fontsize=13)
-    fig.savefig(os.path.join(output_dir, f"{method_name.lower()}_faceted_by_T.png"), dpi=150)
+
+    axes[0].set_ylabel(f"{method_name} 2")
+
+    fig.suptitle(
+        f"{method_name}: faceted by outer cycle, coloured by inner step",
+        fontsize=13,
+        y=1.03,
+    )
+    fig.subplots_adjust(left=0.07, right=0.80, top=0.86, bottom=0.13, wspace=0.18)
+
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+    cax = fig.add_axes([0.872, 0.19, 0.018, 0.545])
+    cb = ColorbarBase(
+        cax, cmap=cmap, norm=norm, orientation="vertical",
+    )
+    cb.set_label("Inner step $i$", fontsize=11)
+    cb.ax.tick_params(labelsize=10)
+
+    out = os.path.join(output_dir, f"{method_name.lower()}_faceted_by_T.png")
+    fig.savefig(out, dpi=150)
     plt.close(fig)
 
 
