@@ -49,7 +49,13 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
-    return torch.cat((x2, x1), dim=-1)
+    # The minus sign is not optional. RoPE applies the 2D rotation
+    #   [x1, x2] -> [x1*cos - x2*sin, x2*cos + x1*sin]
+    # via `x*cos + rotate_half(x)*sin`, which only works when rotate_half
+    # returns [-x2, x1]. Without the negation this is not a rotation at all,
+    # it does not preserve norms, and q.k stops depending on relative position,
+    # which is the entire point of RoPE.
+    return torch.cat((-x2, x1), dim=-1)
 
 def apply_rotary_pos_emb(q: torch.tensor, k: torch.tensor, cos: torch.tensor, sin: torch.tensor) -> Tuple[torch.tensor, torch.tensor]:
     # q, k: [bs, seq_len, num_heads, head_dim]

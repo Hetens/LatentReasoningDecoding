@@ -1,16 +1,29 @@
-from typing import Optional, Any, Sequence, List
+from typing import Optional, Any, Sequence, List, Tuple
 from dataclasses import dataclass
 import argparse
 import os
 import math
 import yaml
 import shutil
+import numpy as np
 import copy
 import torch
 import torch.distributed as dist
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+
+# Upstream TRM uses AdamATan2 (pretrain.py: `from adam_atan2 import AdamATan2`),
+# not AdamW. The difference is not cosmetic: AdamW's update is m/(sqrt(v)+eps),
+# so as gradients shrink the update collapses and the per-step decoupled weight
+# decay takes over, which is the frozen-loss equilibrium the maze runs hit.
+# AdamATan2's atan2(m, sqrt(v)) is bounded and scale-invariant, so the update
+# stays ~lr regardless of gradient scale. Imported lazily so the AdamW path
+# still runs on machines without the CUDA extension built.
+try:
+    from adam_atan2 import AdamATan2
+except ImportError:  # pragma: no cover - depends on the CUDA extension
+    AdamATan2 = None
 
 import tqdm
 import wandb
@@ -56,7 +69,15 @@ class PretrainConfig(pydantic.BaseModel):
     evaluators: List[EvaluatorConfig] = []
 
     #hyperparams
+    # "adam_atan2" matches upstream TRM; "adamw" is the old behaviour, kept so
+    # the two can be compared without swapping branches.
+    optimizer: str = "adam_atan2"
     global_batch_size: int
+    # Rows per forward/backward. When smaller than global_batch_size, gradients
+    # are accumulated over global_batch_size // micro_batch_size micro-batches
+    # before each optimizer step, so a large effective batch fits on one GPU.
+    # None means no accumulation (micro == global), the original behaviour.
+    micro_batch_size: Optional[int] = None
     epochs: int
 
     lr:float
@@ -100,6 +121,27 @@ def deep_merge(base: dict, override: dict) -> dict:
             out[k] = deep_merge(out[k], v)
         else:
             out[k] = v
+    return out
+
+
+def apply_overrides(config: dict, overrides: Sequence[str]) -> dict:
+    """Apply Hydra-style ``key=value`` / ``group.key=value`` CLI overrides.
+
+    Values are parsed as YAML scalars so ``epochs=12800`` yields an int and
+    ``ema=false`` a bool, matching how they would be written in the file.
+    """
+    out = dict(config)
+    for item in overrides:
+        if "=" not in item:
+            raise ValueError(f"Override must be key=value, got {item!r}")
+        key, _, raw = item.partition("=")
+        parts = key.split(".")
+        node = out
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+            if not isinstance(node, dict):
+                raise TypeError(f"Override {item!r} descends into non-mapping at {p!r}")
+        node[parts[-1]] = yaml.safe_load(raw)
     return out
 
 
@@ -154,6 +196,28 @@ class TrainState:
     step: int
     total_steps:int
 
+    # Gradient accumulation. `step` counts optimizer steps, not micro-batches,
+    # so the LR schedule, total_steps and checkpoint names stay on the same
+    # scale they had before accumulation existed.
+    grad_accum: int = 1
+    micro_step: int = 0
+    accum_metrics: Optional[dict] = None
+
+
+def resolve_batching(config: PretrainConfig) -> Tuple[int, int]:
+    """Return ``(micro_batch_size, grad_accum_steps)``.
+
+    The dataloader and the model are sized by the micro batch; the loss scale
+    and the LR schedule stay tied to the full ``global_batch_size``.
+    """
+    micro = config.micro_batch_size or config.global_batch_size
+    if micro <= 0 or config.global_batch_size % micro != 0:
+        raise ValueError(
+            f"global_batch_size ({config.global_batch_size}) must be a positive "
+            f"multiple of micro_batch_size ({micro})")
+    return micro, config.global_batch_size // micro
+
+
 def create_dataloader(config: PretrainConfig, split: str , rank:int, world_size:int, **kwargs):
     # Keys for PuzzleDatasetConfig only — DataLoader must not receive them.
     test_set_mode = kwargs.pop("test_set_mode")
@@ -185,9 +249,26 @@ def create_dataloader(config: PretrainConfig, split: str , rank:int, world_size:
 
 
 def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, rank:int, world_size:int):
+    # Tensors are micro-batch sized; only the optimizer sees the full batch.
+    micro_batch_size, grad_accum = resolve_batching(config)
+
+    # CastedSparseEmbedding.forward overwrites local_ids on every forward, but
+    # local_weights.grad accumulates. Across micro-batches the optimizer would
+    # therefore scatter the summed gradient onto only the LAST micro-batch's
+    # ids. Harmless when every row shares one identifier (maze: 1), silently
+    # wrong otherwise, so refuse rather than corrupt the embedding.
+    if (grad_accum > 1 and config.arch.puzzle_emb_ndim > 0
+            and train_metadata.num_puzzle_identifiers > 1):
+        raise NotImplementedError(
+            f"Gradient accumulation (grad_accum={grad_accum}) is not supported with "
+            f"a multi-identifier puzzle embedding "
+            f"(num_puzzle_identifiers={train_metadata.num_puzzle_identifiers}). "
+            "CastedSparseEmbeddingSignSGD_Distributed would misattribute the "
+            "accumulated gradient. Set micro_batch_size=global_batch_size.")
+
     model_cfg = dict(
         **config.arch.__pydantic_extra__,
-        batch_size = config.global_batch_size // world_size,
+        batch_size = micro_batch_size // world_size,
         vocab_size = train_metadata.vocab_size,
         seq_len = train_metadata.seq_len,
         num_puzzle_identifiers = train_metadata.num_puzzle_identifiers, 
@@ -216,9 +297,25 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
                 for param in list(model.parameters()) + list(model.buffers()):
                     dist.broadcast(param.data, src = 0)
             
+    # Dense optimizer: AdamATan2 upstream, AdamW only if explicitly asked for.
+    if config.optimizer == "adam_atan2":
+        if AdamATan2 is None:
+            raise ImportError(
+                "optimizer='adam_atan2' but the adam_atan2 package is not "
+                "importable. Build it with scripts/unity/setup_adam_atan2.sh, "
+                "or set optimizer=adamw to use the old path.")
+        dense_optim_cls = AdamATan2
+    elif config.optimizer == "adamw":
+        dense_optim_cls = AdamW
+    else:
+        raise ValueError(f"Unknown optimizer {config.optimizer!r}; expected "
+                         "'adam_atan2' or 'adamw'")
+    if rank == 0:
+        print(f"Dense optimizer: {dense_optim_cls.__name__}", flush=True)
+
     if config.arch.puzzle_emb_ndim == 0:
         optimizers = [
-            AdamW(
+            dense_optim_cls(
                 model.parameters(),
                 lr = 0,
                 weight_decay =config.weight_decay,
@@ -245,9 +342,9 @@ def create_model(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, 
                 weight_decay=config.puzzle_emb_weight_decay,
                 world_size=world_size
             ),
-            AdamW(
+            dense_optim_cls(
                 model.parameters(),
-                lr = config.lr,
+                lr = 0,  # set by the scheduler, as upstream does
                 weight_decay =config.weight_decay,
                 betas = (config.beta1, config.beta2)
             )
@@ -283,8 +380,11 @@ def cosine_scheduler_with_warmup_lr_lambda(current_step: int, *, base_lr:float,n
 def init_train_state(config: PretrainConfig, train_metadata: PuzzleDatasetMetadata, rank:int, world_size:int):
 
 
-    # Estimated total training steps
+    # Estimated total training steps. Counted in optimizer steps, so this is
+    # unaffected by gradient accumulation.
     total_steps = int(config.epochs * train_metadata.total_groups * train_metadata.mean_puzzle_examples / config.global_batch_size)
+
+    _, grad_accum = resolve_batching(config)
 
     #Model
     model, optimizers, optimizer_lrs = create_model(config, train_metadata, rank = rank, world_size = world_size)
@@ -296,7 +396,8 @@ def init_train_state(config: PretrainConfig, train_metadata: PuzzleDatasetMetada
         model = model,
         optimizers = optimizers,
         optimizer_lrs = optimizer_lrs,
-        carry = None
+        carry = None,
+        grad_accum = grad_accum,
     )
 
 def save_train_state(config: PretrainConfig, train_state: TrainState):
@@ -314,17 +415,35 @@ def load_checkpoint(model: nn.Module, config: PretrainConfig):
 
         state_dict = torch.load(config.load_checkpoint, map_location=device)
 
+        # Checkpoints are saved from a torch.compile'd model, so keys carry an
+        # "_orig_mod." prefix. Reconcile it against the target model rather
+        # than assuming, so a checkpoint can be reloaded either way round
+        # (the analysis scripts load these same files uncompiled).
+        target_keys = model.state_dict().keys()
+        has_prefix = any(k.startswith("_orig_mod.") for k in state_dict)
+        wants_prefix = any(k.startswith("_orig_mod.") for k in target_keys)
+        if has_prefix and not wants_prefix:
+            state_dict = {k[len("_orig_mod."):]: v for k, v in state_dict.items()}
+        elif wants_prefix and not has_prefix:
+            state_dict = {"_orig_mod." + k: v for k, v in state_dict.items()}
+
         #resize and reset puzzle emb if needed
-        puzzle_emb_name = "_orig_mod.model.inner.puzzle_emb.weights"
-        expected_shape:torch.size = model.model.inner.puzzle_emb.weights.shape
-        if puzzle_emb_name in state_dict:
-            puzzle_emb =state_dict[puzzle_emb_name]
+        # Guarded: configs with puzzle_emb_ndim=0 (Sudoku, Maze) have no
+        # puzzle_emb module at all, so reading its shape unconditionally
+        # crashes every resume on those tasks.
+        puzzle_emb_name = next(
+            (k for k in state_dict if k.endswith("inner.puzzle_emb.weights")), None)
+        puzzle_emb_mod = getattr(getattr(model, "model", model).inner, "puzzle_emb", None)
+        if puzzle_emb_name is not None and getattr(puzzle_emb_mod, "weights", None) is not None:
+            expected_shape = puzzle_emb_mod.weights.shape
+            puzzle_emb = state_dict[puzzle_emb_name]
             if puzzle_emb.shape != expected_shape:
-                print(f"Resetting puzzle embedding as shape is dfferent: Found {puzzle_emb.shape}, expected {expected_shape}")
+                print(f"Resetting puzzle embedding as shape is different: Found {puzzle_emb.shape}, expected {expected_shape}")
 
                 # Reinitialize using mean
-                state_dict[puzzle_emb_name] = (torch.mean(puzzle_emb, dim = 0, keepdim = True).expected(expected_shape).contiguous())
-            
+                state_dict[puzzle_emb_name] = (
+                    torch.mean(puzzle_emb, dim=0, keepdim=True).expand(expected_shape).contiguous())
+
         model.load_state_dict(state_dict, assign = True)
 
 def compute_lr(base_lr:float, config: PretrainConfig, train_state:TrainState):
@@ -349,10 +468,15 @@ def create_evaluators(config: PretrainConfig, eval_metadata:PuzzleDatasetMetadat
     
     return evaluators
 
-def train_batch(config: PretrainConfig, train_state:TrainState, batch: Any, global_batch_size: int, rank: int, world_size: int):
-    train_state.step +=1
-    if train_state.step > train_state.total_steps:
-        return
+def train_batch(config: PretrainConfig, train_state:TrainState, batch: Any, rank: int, world_size: int):
+    """Run one micro-batch, stepping the optimizers every ``grad_accum`` calls.
+
+    Returns ``(metrics, stepped)``. ``metrics`` is non-None only on rank 0 and
+    only at an optimizer step, where it aggregates every micro-batch since the
+    previous step. With ``grad_accum == 1`` this is the original behaviour.
+    """
+    if train_state.step >= train_state.total_steps:
+        return None, False
 
     # to device
     batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
@@ -361,20 +485,38 @@ def train_batch(config: PretrainConfig, train_state:TrainState, batch: Any, glob
     if train_state.carry is None:
         with torch.device(device):
             train_state.carry = train_state.model.initial_carry(batch)
-    
+
     # forward
     train_state.carry, loss, metrics, _, _ = train_state.model(
         carry=train_state.carry, batch=batch, return_keys=[]
     )
 
-    ((1/global_batch_size) * loss).backward()
+    # Scale by the FULL batch, not the micro-batch, so the gradients summed
+    # across grad_accum micro-batches are the mean over global_batch_size.
+    ((1/config.global_batch_size) * loss).backward()
+
+    # Hold metrics until the step so they cover the whole effective batch.
+    if len(metrics) > 0:
+        assert not any(v.requires_grad for v in metrics.values())
+        if train_state.accum_metrics is None:
+            train_state.accum_metrics = {k: v.detach().clone() for k, v in metrics.items()}
+        else:
+            for k, v in metrics.items():
+                train_state.accum_metrics[k] += v.detach()
+
+    train_state.micro_step += 1
+    if train_state.micro_step < train_state.grad_accum:
+        return None, False
+
+    train_state.micro_step = 0
+    train_state.step += 1
 
     #All reduce
     if world_size > 1:
         for param in train_state.model.parameters():
             if param.grad is not None:
                 dist.all_reduce(param.grad)
-    
+
     #Apply optimizers
     lr_this_step = None
     for optim, base_lr in zip(train_state.optimizers, train_state.optimizer_lrs):
@@ -382,30 +524,32 @@ def train_batch(config: PretrainConfig, train_state:TrainState, batch: Any, glob
 
         for param_group in optim.param_groups:
             param_group['lr'] = lr_this_step
-        
+
         optim.step()
         optim.zero_grad()
 
 #reduce metrics
-    if len(metrics) > 0:
-        assert not any(v.requires_grad for v in metrics.values())
+    accum, train_state.accum_metrics = train_state.accum_metrics, None
+    if accum:
         # reduce
-        metrics_keys = list(sorted(metrics.keys()))
-        metric_values = torch.stack([metrics[k] for k in metrics_keys])
+        metrics_keys = list(sorted(accum.keys()))
+        metric_values = torch.stack([accum[k] for k in metrics_keys])
         if world_size > 1:
             dist.reduce(metric_values, dst = 0)
-        
+
         if rank == 0:
             metric_values = metric_values.cpu().numpy()
             reduced_metrics = {k:metric_values[i] for i, k in enumerate(metrics_keys)}
 
             #postprocess
             count = max(reduced_metrics["count"], 1) # to avoid nans
-            reduced_metrics = {f"train/{k}": v /(global_batch_size if k.endswith("loss") else count) for k, v in reduced_metrics.items()}
+            reduced_metrics = {f"train/{k}": v /(config.global_batch_size if k.endswith("loss") else count) for k, v in reduced_metrics.items()}
 
             reduced_metrics["train/lr"] = lr_this_step
 
-            return reduced_metrics
+            return reduced_metrics, True
+
+    return None, True
 
 
 def evaluate(
@@ -589,8 +733,11 @@ def load_synced_config(raw_config: dict, rank: int, world_size: int) -> Pretrain
     return objects[0]  # type: ignore
 
 
-def launch(config_path: str) -> None:
+def launch(config_path: str, overrides: Sequence[str] = ()) -> None:
     raw_config = load_composed_config(config_path)
+    if overrides:
+        raw_config = apply_overrides(raw_config, overrides)
+        print(f"Config overrides: {list(overrides)}")
     RANK = 0
     WORLD_SIZE = 1
     CPU_PROCESS_GROUP = None
@@ -623,9 +770,16 @@ def launch(config_path: str) -> None:
 
     assert config.epochs % train_epochs_per_iter == 0, "Eval interval must be a divisor of total epochs."
 
-    train_loader, train_metadata = create_dataloader(config, "train", test_set_mode=False, epochs_per_iter=train_epochs_per_iter, global_batch_size=config.global_batch_size, rank=RANK, world_size=WORLD_SIZE)
+    # Loaders yield micro-batches; train_batch accumulates them up to
+    # global_batch_size before stepping. Eval never accumulates, so it just
+    # uses the same memory-safe micro size.
+    micro_batch_size, grad_accum = resolve_batching(config)
+    if RANK == 0 and grad_accum > 1:
+        print(f"Gradient accumulation: {grad_accum} x {micro_batch_size} = {config.global_batch_size}", flush=True)
+
+    train_loader, train_metadata = create_dataloader(config, "train", test_set_mode=False, epochs_per_iter=train_epochs_per_iter, global_batch_size=micro_batch_size, rank=RANK, world_size=WORLD_SIZE)
     try:
-        eval_loader,  eval_metadata  = create_dataloader(config, "test", test_set_mode=True, epochs_per_iter=1, global_batch_size=config.global_batch_size, rank=RANK, world_size=WORLD_SIZE)
+        eval_loader,  eval_metadata  = create_dataloader(config, "test", test_set_mode=True, epochs_per_iter=1, global_batch_size=micro_batch_size, rank=RANK, world_size=WORLD_SIZE)
     except:
         print("NO EVAL DATA FOUND")
         eval_loader = eval_metadata = None
@@ -660,13 +814,15 @@ def launch(config_path: str) -> None:
         if RANK == 0:
             print("TRAIN")
         train_state.model.train()
-        for set_name, batch, global_batch_size in train_loader:
-            metrics = train_batch(config, train_state, batch, global_batch_size, rank=RANK, world_size=WORLD_SIZE)
+        for set_name, batch, _micro_gbs in train_loader:
+            metrics, stepped = train_batch(config, train_state, batch, rank=RANK, world_size=WORLD_SIZE)
 
             if RANK == 0 and metrics is not None:
                 wandb.log(metrics, step=train_state.step)
                 progress_bar.update(train_state.step - progress_bar.n)  # type: ignore
-            if config.ema:
+            # Once per optimizer step, not per micro-batch, or ema_rate would
+            # be applied grad_accum times as often.
+            if config.ema and stepped:
                 ema_helper.update(train_state.model)
 
         if _iter_id >= config.min_eval_interval:
@@ -691,7 +847,23 @@ def launch(config_path: str) -> None:
 
             if RANK == 0 and metrics is not None:
                 wandb.log(metrics, step=train_state.step)
-                
+                # wandb runs offline on the cluster, so echo the eval metrics
+                # to stdout: this is the only way to watch a run's progress
+                # without post-hoc parsing of the .wandb file. metrics is
+                # nested as {set_name: {metric: value}} and wandb flattens it
+                # with "/", so do the same here rather than dropping it all.
+                flat = {}
+                for k, v in metrics.items():
+                    if isinstance(v, dict):
+                        flat.update({f"{k}/{kk}": vv for kk, vv in v.items()})
+                    else:
+                        flat[k] = v
+                print("EVAL step={} | {}".format(
+                    train_state.step,
+                    "  ".join(f"{k}={float(v):.4f}" for k, v in sorted(flat.items())
+                              if isinstance(v, (int, float, np.floating, np.integer)))),
+                    flush=True)
+
             ############ Checkpointing
             if RANK == 0:
                 print("SAVE CHECKPOINT")
@@ -711,5 +883,5 @@ if __name__ == "__main__":
     _default_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config_pretrain.yml")
     _parser = argparse.ArgumentParser(description="Pretrain (YAML config; Hydra-style defaults supported without hydra-core).")
     _parser.add_argument("--config", type=str, default=_default_cfg, help="Path to main YAML config file.")
-    _args = _parser.parse_args()
-    launch(_args.config)
+    _args, _overrides = _parser.parse_known_args()
+    launch(_args.config, _overrides)

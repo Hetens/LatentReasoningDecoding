@@ -99,14 +99,17 @@ def _sparse_emb_signsgd_dist( local_weights_grad: torch.Tensor, local_ids: torch
 
     #unique
     grad_ids, inv = all_ids.unique(return_inverse = True)
-    grad = torch.zeros((grad_ids.shape[0], D), dtype =local_weights_grad.dtype, device =local_weights_grad.device)
+    grad = torch.zeros((grad_ids.shape[0], D), dtype =all_weights_grad.dtype, device =all_weights_grad.device)
 
-    grad.scatter_add_(0, inv.unsqueeze(-1).expand(1,D), all_weights_grad)
+    # expand(-1, D), not expand(1, D): inv is (N,) -> (N, 1) and must broadcast
+    # across the embedding dim, one row per gathered example.
+    grad.scatter_add_(0, inv.unsqueeze(-1).expand(-1, D), all_weights_grad)
 
 
     #signSGD decoupled with weight decay
     p = weights[grad_ids]
 
-    p.mul_(1.0 - lr * weight_decay).add_(torch.sign(grad), alpha = lr)
+    # alpha=-lr: SignSGD DESCENDS the gradient. A positive alpha here ascends it.
+    p.mul_(1.0 - lr * weight_decay).add_(torch.sign(grad), alpha = -lr)
 
     weights[grad_ids] = p

@@ -10,3 +10,5 @@ checkpoints
 results
 docs
 Formatting_Instructions_For_NeurIPS_2026
+logs/
+scripts/unity/logs/
