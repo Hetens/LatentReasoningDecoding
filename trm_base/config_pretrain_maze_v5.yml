@@ -1,0 +1,84 @@
+# Pretrain config for Maze-Hard (30x30), fifth attempt: the first one with
+# working RoPE.
+#
+# Hyperparameters here are IDENTICAL to v4. Nothing in this file changed. The
+# difference is in the code: trm_base/layers.py:52 had
+#
+#     return torch.cat((x2, x1), dim=-1)     # ours, wrong
+#     return torch.cat((-x2, x1), dim=-1)    # upstream, correct
+#
+# rotate_half was missing its negation, so `x*cos + rotate_half(x)*sin` was
+# not a rotation. Measured in float64 over 32 positions with fixed content:
+#
+#                        max |norm change|    spread of q.k at fixed offset
+#   without the minus         5.569e-01                   1.119e+01
+#   with the minus            1.776e-15                   1.066e-14
+#
+# A rotation cannot change a vector's norm, and RoPE exists so that q_m . k_n
+# depends only on (m - n). Both properties failed. Every run in this repo that
+# used pos_encodings=rope, which is all of them, had positional information
+# scrambled, and the maze task is 916 tokens of pure spatial reasoning.
+#
+# This explains the shape of the failure better than any hyperparameter did:
+# per-cell accuracy sat at 0.956 (local structure is learnable without good
+# position) while whole-maze exact accuracy stalled near 0.30, and the v3
+# memorization check found train accuracy BELOW test (0.223 vs 0.296), i.e.
+# the model was not overfitting 1,000 mazes, it was failing to represent them.
+#
+# Optimizer is adam_atan2, matching upstream. v4 measured AdamATan2 as worse
+# than AdamW (0.150 vs 0.253 mean over eight paired evals), but that
+# comparison was run under broken RoPE and does not carry over. If v5 falls
+# short, rerun this config with optimizer=adamw before touching anything else.
+#
+# Upstream maze command, for reference:
+#   torchrun --nproc-per-node 4 pretrain.py arch=trm \
+#     data_paths="[data/maze-30x30-hard-1k]" evaluators="[]" \
+#     epochs=50000 eval_interval=5000 \
+#     lr=1e-4 puzzle_emb_lr=1e-4 weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+#     arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=4 ema=True
+#
+# total_steps = 50000 * 1000 / 768 = 65,104 optimizer steps
+#             = 390,625 micro-batches at micro_batch_size=128, so ~51h.
+
+defaults:
+  - arch: trm_paper_maze_v3
+  - _self_
+
+hydra:
+  output_subdir: null
+
+data_paths: ['data/maze-30x30-hard-1k']
+data_paths_test: ['data/maze-30x30-hard-1k']
+
+max_train_samples: null
+max_test_samples: null
+
+evaluators: []
+
+# --- Paper hyperparams (Maze-Hard) ---
+optimizer: adam_atan2
+
+global_batch_size: 768     # upstream default, NOT overridden by the maze command
+micro_batch_size: 128      # 6 accumulation steps; 128 is the L40S ceiling
+
+epochs: 50000
+eval_interval: 2500        # 20 evals, one every 3,255 optimizer steps
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+
+puzzle_emb_lr: 1e-4
+
+seed: 0
+min_eval_interval: 0
+
+ema: True
+ema_rate: 0.999
+freeze_weights: False

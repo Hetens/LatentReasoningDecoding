@@ -1,0 +1,67 @@
+# Pretrain config for Maze-Hard (30x30), matching the TRM repo's command.
+#
+# Supersedes config_pretrain_maze.yml, which plateaued at ~0.185 exact
+# accuracy (slope over the last 8 evals +0.021/100k steps, p=0.60). The
+# upstream command is:
+#
+#   torchrun --nproc-per-node 4 pretrain.py arch=trm \
+#     data_paths="[data/maze-30x30-hard-1k]" evaluators="[]" \
+#     epochs=50000 eval_interval=5000 \
+#     lr=1e-4 puzzle_emb_lr=1e-4 weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+#     arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=4 ema=True
+#
+# Three corrections against the old config:
+#   weight_decay           0.1 -> 1.0   (and puzzle_emb_weight_decay)
+#   arch.L_cycles          6   -> 4     (via arch: trm_paper_maze)
+#   epochs                 10000 -> 50000
+#
+# The weight decay was 10x too low on a dataset of only 8,000 examples
+# (1,000 mazes x 8 dihedral augments) that each get seen ~1,250 times, so
+# the old run was badly under-regularized.
+#
+# global_batch_size 512 = 4 GPUs x 128 local. 128 is the largest local
+# batch that fits an L40S at seq_len 900 (measured: 30.6 of 44.4 GiB;
+# 256 OOMs), and upstream notes 128 costs no measurable accuracy.
+# total_steps = 50000 * 1000 / 512 = 97,656.
+
+defaults:
+  - arch: trm_paper_maze
+  - _self_
+
+hydra:
+  output_subdir: null
+
+data_paths: ['data/maze-30x30-hard-1k']
+data_paths_test: ['data/maze-30x30-hard-1k']
+
+max_train_samples: null
+max_test_samples: null
+
+evaluators: []
+
+# --- Paper hyperparams (Maze-Hard) ---
+optimizer: adamw           # what this run used; upstream uses AdamATan2
+
+global_batch_size: 512
+
+epochs: 50000
+eval_interval: 2500        # 20 checkpoints, one every ~4,883 steps
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+
+puzzle_emb_lr: 1e-4
+
+seed: 0
+min_eval_interval: 0
+
+ema: True
+ema_rate: 0.999
+freeze_weights: False

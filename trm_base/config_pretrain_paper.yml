@@ -20,6 +20,11 @@ max_test_samples: null
 evaluators: []
 
 # --- Paper hyperparams (Sudoku-Extreme) ---
+# Superseded by config_pretrain_sudoku_v2.yml. Pinned to adamw (the repo
+# default is now adam_atan2) so the numbers this config produced stay
+# reproducible.
+optimizer: adamw
+
 global_batch_size: 768
 
 epochs: 50000

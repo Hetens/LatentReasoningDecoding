@@ -1,0 +1,99 @@
+# Pretrain config for Sudoku-Extreme (attention variant), second attempt.
+#
+# Supersedes config_pretrain_paper.yml. Applies every correction the maze
+# investigation turned up, so this is the maze v4 recipe retargeted at Sudoku.
+#
+# Upstream command (README, "Attention variant"), verbatim:
+#   python pretrain.py arch=trm \
+#     data_paths="[data/sudoku-extreme-1k-aug-1000]" evaluators="[]" \
+#     epochs=50000 eval_interval=5000 \
+#     lr=1e-4 puzzle_emb_lr=1e-4 weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+#     arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=6 ema=True
+#
+# Corrections against config_pretrain_paper.yml:
+#   weight_decay            0.1   -> 1.0
+#   puzzle_emb_weight_decay 0.1   -> 1.0
+#   optimizer               AdamW -> AdamATan2   (upstream pretrain.py:20)
+#   arch                    trm_paper -> trm_paper_sudoku_v2
+#                           (puzzle_emb_ndim 0->512, puzzle_emb_len 0->16,
+#                            halt_exploration_prob 0.05->0.1)
+#
+# The weight decay and the optimizer are coupled and must move together.
+# AdamW's update is m/(sqrt(v) + eps), so once gradients get small the update
+# collapses while decoupled weight decay keeps pulling at full strength every
+# step, and the loss freezes. That is what the maze v2 run did at wd=1.0.
+# AdamATan2 uses atan2(m, sqrt(v)), which is bounded and scale-invariant, so
+# the update stays ~lr no matter how small the gradient gets. Measured on an
+# A100 (job 62520095) at lr=0.01: grad 1e0, 1e-4 and 1e-8 all give step
+# +0.009967. Raising wd to 1.0 while staying on AdamW would reproduce the v2
+# freeze, not the paper.
+#
+# Requires the adam-atan2 CUDA extension: scripts/unity/setup_adam_atan2.sh.
+# Built for arch 8.0/8.6/8.9, so a100, a40 and l40s work; V100 (7.0) does not.
+#
+# Batching: no gradient accumulation. seq_len is 97 after the puzzle-embedding
+# prefix, versus the maze's 916, so the full 768-row batch fits one L40S in
+# less memory than the maze's 128-row micro-batch used.
+#
+# total_steps = 50000 * 1000 (total_groups) * 1.0 / 768 = 65,104 optimizer
+# steps. build_sdku_data.py hardcodes mean_puzzle_examples=1 as upstream does:
+# the 1,001,000 stored rows are 1000 groups x 1001 augments, and an epoch
+# draws one augment per group, so augmentation buys variety, not extra steps.
+
+defaults:
+  - arch: trm_paper_sudoku_v2
+  - _self_
+
+hydra:
+  output_subdir: null
+
+data_paths: ['data/sudoku-extreme-1k-aug-1000']
+data_paths_test: ['data/sudoku-extreme-1k-aug-1000']
+
+max_train_samples: null
+
+# The Sudoku test split is 422,786 puzzles, versus the maze's 1,000. Measured
+# on smoke test 62554349: eval runs all 16 ACT steps per batch with no
+# backward, which costs ~5.9 s per 768-row batch against training's ~0.6 s per
+# step. That is not an inefficiency, it is 16 forwards versus roughly 3
+# forward-equivalents, and it makes a full test pass ~54 min. Twenty of those
+# would add ~18 h to a ~13 h training run.
+#
+# 20,000 is first-N, not a random sample (puzzle_dataset._truncate_dataset_arrays
+# keeps the first rows). Checked for ordering bias: mean blank-cell count is
+# 55.5-55.9 across the whole file with no trend, so the head of the file is not
+# a systematically easier or harder slice. At 75% accuracy n=20,000 gives a
+# standard error of 0.3%, which is far below the gap we are trying to close.
+# Run one full-test eval from the final checkpoint if the headline number needs
+# to be directly comparable to the paper's.
+max_test_samples: 20000
+
+evaluators: []
+
+# --- Paper hyperparams (Sudoku-Extreme) ---
+optimizer: adam_atan2
+
+global_batch_size: 768
+micro_batch_size: 768     # no accumulation; seq_len 97 leaves headroom
+
+epochs: 50000
+eval_interval: 2500       # 20 evals, one every 3,255 optimizer steps
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+
+puzzle_emb_lr: 1e-4
+
+seed: 0
+min_eval_interval: 0
+
+ema: True
+ema_rate: 0.999
+freeze_weights: False

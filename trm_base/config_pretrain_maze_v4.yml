@@ -1,0 +1,79 @@
+# Pretrain config for Maze-Hard (30x30), fourth attempt: the AdamATan2 recipe.
+#
+# Identical to config_pretrain_maze_v3.yml except for the optimizer. v3 used
+# torch.optim.AdamW; upstream uses AdamATan2 (pretrain.py:20,
+# `from adam_atan2 import AdamATan2`). That was the last remaining deviation
+# after batch size, puzzle embeddings and halt_exploration_prob were fixed.
+#
+# WHY THE OPTIMIZER IS NOT A DETAIL. AdamW's update is m/(sqrt(v) + eps), so
+# once gradients get small the update collapses while the decoupled weight
+# decay term keeps pulling at full strength every step. The parameters settle
+# into a decay-gradient equilibrium and the loss stops moving: exactly what v2
+# did, freezing at lm_loss ~0.07 from step 19k for the remaining 95% of the
+# run. AdamATan2 replaces the epsilon division with atan2(m, sqrt(v)), which is
+# bounded and scale-invariant, so the update stays ~lr no matter how small the
+# gradient gets. Measured on an A100 during setup (job 62520095):
+#
+#   grad=1e+00 -> step=+0.009967
+#   grad=1e-04 -> step=+0.009967
+#   grad=1e-08 -> step=+0.009967
+#
+# That invariance is what makes upstream's weight_decay=1.0 survivable rather
+# than destructive.
+#
+# Requires the adam-atan2 CUDA extension: scripts/unity/setup_adam_atan2.sh.
+# Built for arch 8.0/8.6/8.9, so a100, a40 and l40s all work; V100 (7.0) does
+# not. Constrain the job accordingly.
+#
+# Upstream maze command, for reference:
+#   torchrun --nproc-per-node 4 pretrain.py arch=trm \
+#     data_paths="[data/maze-30x30-hard-1k]" evaluators="[]" \
+#     epochs=50000 eval_interval=5000 \
+#     lr=1e-4 puzzle_emb_lr=1e-4 weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+#     arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=4 ema=True
+#
+# total_steps = 50000 * 1000 / 768 = 65,104 optimizer steps
+#             = 390,625 micro-batches at micro_batch_size=128, so ~51h.
+
+defaults:
+  - arch: trm_paper_maze_v3
+  - _self_
+
+hydra:
+  output_subdir: null
+
+data_paths: ['data/maze-30x30-hard-1k']
+data_paths_test: ['data/maze-30x30-hard-1k']
+
+max_train_samples: null
+max_test_samples: null
+
+evaluators: []
+
+# --- Paper hyperparams (Maze-Hard) ---
+optimizer: adam_atan2      # THE change versus v3
+
+global_batch_size: 768     # upstream default, NOT overridden by the maze command
+micro_batch_size: 128      # 6 accumulation steps; 128 is the L40S ceiling
+
+epochs: 50000
+eval_interval: 2500        # 20 evals, one every 3,255 optimizer steps
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+
+puzzle_emb_lr: 1e-4
+
+seed: 0
+min_eval_interval: 0
+
+ema: True
+ema_rate: 0.999
+freeze_weights: False

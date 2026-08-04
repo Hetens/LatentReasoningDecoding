@@ -1,0 +1,79 @@
+# Pretrain config for Maze-Hard (30x30), third attempt.
+#
+# v2 (job 62270703) ran the full 390,625 steps and finished at 0.157 exact
+# accuracy against the paper's ~0.85, with lm_loss frozen at ~0.07 from step
+# 19k onward. Diffing against the real upstream repo found what v2 still had
+# wrong. Upstream command:
+#
+#   torchrun --nproc-per-node 4 pretrain.py arch=trm \
+#     data_paths="[data/maze-30x30-hard-1k]" evaluators="[]" \
+#     epochs=50000 eval_interval=5000 \
+#     lr=1e-4 puzzle_emb_lr=1e-4 weight_decay=1.0 puzzle_emb_weight_decay=1.0 \
+#     arch.L_layers=2 arch.H_cycles=3 arch.L_cycles=4 ema=True
+#
+# Note what the command does NOT override: global_batch_size stays at the
+# cfg_pretrain.yaml default of 768, and the arch keeps trm.yaml's puzzle
+# embedding. Both were wrong in v2.
+#
+# THE BATCH SIZE IS THE POINT. v2 used 128, so it took 390,625 optimizer steps
+# where upstream takes 65,104 for the same 50M samples. torch.optim.AdamW
+# decouples weight decay and applies p *= (1 - lr*wd) PER STEP, so at
+# lr=1e-4, wd=1.0 that is exp(-39) of cumulative shrinkage against upstream's
+# exp(-6.5): six times the regularization pressure, at the same nominal
+# weight_decay. A frozen lm_loss is what that equilibrium looks like.
+#
+# 768 will not fit on one L40S (128 already uses 30.6 of 44.4 GiB at seq_len
+# 900), so micro_batch_size drives gradient accumulation: 6 x 128 = 768.
+# Verified numerically equivalent to a single 768-row batch.
+#
+# Arch fixes are in arch/trm_paper_maze_v3.yml (puzzle_emb 0/0 -> 512/16,
+# halt_exploration_prob 0.05 -> 0.1).
+#
+# total_steps = 50000 * 1000 / 768 = 65,104 optimizer steps
+#             = 390,625 micro-batches, so wall time is unchanged at ~51h.
+
+defaults:
+  - arch: trm_paper_maze_v3
+  - _self_
+
+hydra:
+  output_subdir: null
+
+data_paths: ['data/maze-30x30-hard-1k']
+data_paths_test: ['data/maze-30x30-hard-1k']
+
+max_train_samples: null
+max_test_samples: null
+
+evaluators: []
+
+# --- Paper hyperparams (Maze-Hard) ---
+# Pinned explicitly: this run predates the AdamATan2 support and used AdamW,
+# which is NOT what upstream uses. config_pretrain_maze_v4.yml is the corrected
+# recipe. Kept as-is so v3's numbers stay reproducible.
+optimizer: adamw
+
+global_batch_size: 768     # upstream default, NOT overridden by the maze command
+micro_batch_size: 128      # 6 accumulation steps; 128 is the L40S ceiling
+
+epochs: 50000
+eval_interval: 2500        # 20 evals, one every 3,255 optimizer steps
+checkpoint_every_eval: True
+
+lr: 1e-4
+lr_min_ratio: 1.0
+lr_warmup_steps: 2000
+
+beta1: 0.9
+beta2: 0.95
+weight_decay: 1.0
+puzzle_emb_weight_decay: 1.0
+
+puzzle_emb_lr: 1e-4
+
+seed: 0
+min_eval_interval: 0
+
+ema: True
+ema_rate: 0.999
+freeze_weights: False
